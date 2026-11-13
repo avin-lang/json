@@ -21,25 +21,25 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 main()
-    val event = json.parse("{\"id\": 7, \"cmd\": \"make\", \"tags\": [\"a\", \"b\"]}") match
-        Ok(j) -> j
-        Err(e) -> fail(s"bad event: $e")
-    println(event("cmd").asString)                    // Some(make)
-    println(event.get("exit").flatMap(x -> x.asInt))  // None
-    println(event.with("exit", Json.num(0)))            // {"id":7,"cmd":"make","tags":["a","b"],"exit":0}
+  val event = json.parse("{\"id\": 7, \"cmd\": \"make\", \"tags\": [\"a\", \"b\"]}") match
+    Ok(j) -> j
+    Err(e) -> fail(s"bad event: $e")
+  println(event("cmd").asString)                    // Some(make)
+  println(event.get("exit").flatMap(x -> x.asInt))  // None
+  println(event.with("exit", Json.num(0)))            // {"id":7,"cmd":"make","tags":["a","b"],"exit":0}
 ```
 
 ## Values
 
 ```text
 data Json
-    Null
-    Bool(value: bool)
-    Long(value: long)
-    Real(value: real)
-    Str(value: string)
-    Arr(items: Vector[Json])
-    Obj(members: Vector[(string, Json)])
+  Null
+  Bool(value: bool)
+  Long(value: long)
+  Real(value: real)
+  Str(value: string)
+  Arr(items: Vector[Json])
+  Obj(members: Vector[(string, Json)])
 ```
 
 - **A number is a `Long` when the text writes a whole number that fits a `long`**: digits with an
@@ -121,33 +121,33 @@ import avin.fs
 
 // The sum of every record's "bytes", read from a log far larger than memory.
 totalBytes(path: string) -> Result[long, json.JsonError]
-    val r = JsonReader.fromReader(fs.open(path).ok.get)
-    var sum: long = 0
-    r.beginArray()?
-    while r.nextElement()?
-        r.beginObject()?
-        loop
-            r.nextKey()? match
-                None -> break
-                Some("bytes") -> sum += r.readLong()?
-                Some(_) -> r.skipValue()?
-    r.finish()?
-    Ok(sum)
+  val r = JsonReader.fromReader(fs.open(path).ok.get)
+  var sum: long = 0
+  r.beginArray()?
+  while r.nextElement()?
+    r.beginObject()?
+    loop
+      r.nextKey()? match
+        None -> break
+        Some("bytes") -> sum += r.readLong()?
+        Some(_) -> r.skipValue()?
+  r.finish()?
+  Ok(sum)
 ```
 
 ```text
 data JsonEvent
-    StartObject
-    EndObject
-    StartArray
-    EndArray
-    MemberName(name: string)
-    StringValue(value: string)
-    LongValue(value: long)
-    RealValue(value: real)
-    BoolValue(value: bool)
-    NullValue
-    EndOfText
+  StartObject
+  EndObject
+  StartArray
+  EndArray
+  MemberName(name: string)
+  StringValue(value: string)
+  LongValue(value: long)
+  RealValue(value: real)
+  BoolValue(value: bool)
+  NullValue
+  EndOfText
 ```
 
 | Made by | Reads |
@@ -254,14 +254,14 @@ data Person(@JsonKey("full_name") name: string, age: int, home: Option[Address])
 
 @JsonTag("kind")
 data Shape derives JsonEncoder, JsonDecoder
-    Circle(radius: real)
-    Empty
+  Circle(radius: real)
+  Empty
 
 main()
-    println(json.encode(Person("Ada", 36, None)))     // {"full_name":"Ada","age":36,"home":null}
-    println(json.encode[Shape](Circle(1.5)))         // {"kind":"Circle","radius":1.5}
-    println(json.decode[Person]("{\"full_name\": \"Ada\", \"age\": 36, \"home\": {\"street\": 1}}").err.get)
-    // home.street: expected a string, found a number at line 1, column 52
+  println(json.encode(Person("Ada", 36, None)))     // {"full_name":"Ada","age":36,"home":null}
+  println(json.encode[Shape](Circle(1.5)))         // {"kind":"Circle","radius":1.5}
+  println(json.decode[Person]("{\"full_name\": \"Ada\", \"age\": 36, \"home\": {\"street\": 1}}").err.get)
+  // home.street: expected a string, found a number at line 1, column 52
 ```
 
 | A value of | Is written as |
