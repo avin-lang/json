@@ -61,8 +61,8 @@ jsonLines()
       ("id", Json.num(i)),
       ("cmd", Json.str("say \"hi\"\n é"))
     )
-    fs.appendText(log, event.render + "\n")
-  fs.appendText(log, "{\"event\": \"finished\", \"id\": }\n")
+    fs.appendText(log, event.render + "\n").ok.get
+  fs.appendText(log, "{\"event\": \"finished\", \"id\": }\n").ok.get
   val lines = fs.readText(log).ok.get.lines
   val said = lines.map(line -> json.parse(line) match
     Ok(j) -> s"${j("event").asString.get} ${j("id")} ${j("cmd").asString.get.charCount}"
