@@ -1,0 +1,1 @@
+package { name = "json", version = "0.0.1", description = "JSON: a value type, reading and writing text, a streaming reader, and encoders and decoders derived for a program's own types" }

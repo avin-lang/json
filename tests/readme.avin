@@ -1,0 +1,64 @@
+module tests
+
+// The README's examples: reading an event, its accessors, setting a member, the accessors chained
+// with `?`, errors displayed with their place, the indented form, a program's own types encoded and
+// decoded, and a log of JSON lines written to a file and read back.
+import dev.avinlang.json
+import dev.avinlang.json.{Json, JsonEncoder, JsonDecoder, JsonKey, JsonTag}
+import avin.fs
+
+private exitCode(event: Json) -> Option[int] = event.get("result")?.get("exit")?.asInt
+
+@test("the README's event: its accessors, a member set, and the accessors chained with ?")
+readmeEvent()
+    val event = json.parse("{\"id\": 7, \"cmd\": \"make\", \"tags\": [\"a\", \"b\"]}").ok.get
+    assertEq(event("cmd").asString, Some("make"))
+    assertEq(event.get("exit").flatMap(x -> x.asInt), None)
+    assertEq(event.with("exit", Json.num(0)).render, "{\"id\":7,\"cmd\":\"make\",\"tags\":[\"a\",\"b\"],\"exit\":0}")
+    assertEq(exitCode(event), None)
+    assertEq(exitCode(json.parse("{\"result\": {\"exit\": 3}}").ok.get), Some(3))
+
+@test("the README's errors are displayed with the line and column of the fault")
+readmeErrors()
+    assertEq(json.parse("[1,]").err.get.toString(), "unexpected ']' after ',' in an array at line 1, column 4")
+    assertEq(json.parse("\"\\ud800\"").err.get.toString(), "a high surrogate \\uD800 with no low surrogate after it at line 1, column 2")
+    assertEq(json.parse("[01]").err.get.toString(), "a number with a leading zero at line 1, column 2")
+
+@test("the README's indented form puts each element on its own line")
+readmePretty()
+    assertEq(Json.obj(("a", Json.arr(Json.num(1), Json.num(2)))).pretty(), "{\n  \"a\": [\n    1,\n    2\n  ]\n}")
+
+// The README's `Address`, `Person` and `Shape`, named apart from derive_shapes.avin's in this module.
+data Home(street: string, city: string) derives JsonEncoder, JsonDecoder
+
+data Member(@JsonKey("full_name") name: string, age: int, home: Option[Home]) derives JsonEncoder, JsonDecoder
+
+@JsonTag("kind")
+data Outline derives JsonEncoder, JsonDecoder
+    Ring(radius: real)
+    Hollow
+
+@test("the README's own types: a renamed key, null for None, a discriminator, and an error's path")
+readmeDerived()
+    assertEq(json.encode(Member("Ada", 36, None)), "{\"full_name\":\"Ada\",\"age\":36,\"home\":null}")
+    assertEq(json.encode[Outline](Ring(1.5)), "{\"kind\":\"Ring\",\"radius\":1.5}")
+    assertEq(json.decode[Member]("{\"full_name\": \"Ada\", \"age\": 36, \"home\": {\"street\": 1}}").err.get.toString(),
+        "home.street: expected a string, found a number at line 1, column 52")
+
+@test("a log of JSON lines: each line read back, a damaged one reported at its place, events filtered")
+jsonLines()
+    val dir = fs.createTempDir("json-lines").ok.get
+    defer fs.removeDirAll(dir)
+    val log = dir + "/events.jsonl"
+    for i in 0..<5
+        val event = Json.obj(("event", Json.str(if i % 2 == 0 then "started" else "finished")), ("id", Json.num(i)), ("cmd", Json.str("say \"hi\"\n é")))
+        fs.appendText(log, event.render + "\n")
+    fs.appendText(log, "{\"event\": \"finished\", \"id\": }\n")
+    val lines = fs.readText(log).ok.get.lines
+    val said = lines.map(line -> json.parse(line) match
+        Ok(j) -> s"${j("event").asString.get} ${j("id")} ${j("cmd").asString.get.charCount}"
+        Err(e) -> e.toString())
+    assertEq(said, ["started 0 11", "finished 1 11", "started 2 11", "finished 3 11", "started 4 11",
+        "unexpected '}' where a value was expected at line 1, column 29"])
+    val finished = lines.map(l -> json.parse(l)).filter(r -> r.isOk).map(r -> r.ok.get).filter(j -> j.get("event") == Some(Json.str("finished")))
+    assertEq(finished.map(j -> j("id").asInt.get), [1, 3])
