@@ -62,7 +62,7 @@ shown[A: Display](r: Result[A, JsonError]) -> string = r match
 
 // Where decoding `text` from a source cut into pieces of each size from 1 to 9 disagrees with
 // decoding it whole.
-pieceDisagreements[A: JsonDecoder + Display](text: string) -> Vector[string]
+pieceDisagreements[A: JsonDecoder & Display](text: string) -> Vector[string]
   val whole = shown(json.decode[A](text))
   val wrong = Buffer[string]()
   for size in 1 .. 9

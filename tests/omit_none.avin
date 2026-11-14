@@ -34,7 +34,7 @@ data Run derives JsonEncoder, JsonDecoder
   Started(@JsonOmitNone by: Option[string])
   Stopped(code: Option[int])
 
-both[A: JsonEncoder + JsonDecoder + Debug](a: A, text: string)
+both[A: JsonEncoder & JsonDecoder & Debug](a: A, text: string)
   assertEq(json.encode(a), text)
   assertEq(json.decode[A](text), Ok(a))
 

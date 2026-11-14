@@ -31,7 +31,7 @@ data Nest(
 data OmitNoDefault(a: int, @JsonOmit b: int) derives JsonEncoder, JsonDecoder
 
 // The error decoding `text` as an `A`, displayed.
-failure[A: JsonDecoder + Display](text: string) -> string = json.decode[A](text) match
+failure[A: JsonDecoder & Display](text: string) -> string = json.decode[A](text) match
   Ok(a) -> s"decoded $a"
   Err(e) -> s"$e"
 

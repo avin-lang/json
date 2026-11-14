@@ -35,7 +35,7 @@ depthOf(node: Node) -> int
     at = inner
   n
 
-same[A: JsonEncoder + JsonDecoder + Debug](a: A, text: string)
+same[A: JsonEncoder & JsonDecoder & Debug](a: A, text: string)
   assertEq(json.encode(a), text)
   assertEq(json.decode[A](text), Ok(a))
 

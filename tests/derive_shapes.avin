@@ -78,7 +78,7 @@ class Derived(m: int): Base(m * 2)
 data Mixed(value: int | string) derives JsonEncoder
 
 // `a` encodes to `text`, and `text` decodes to `a`.
-roundTrip[A: JsonEncoder + JsonDecoder + Debug](a: A, text: string)
+roundTrip[A: JsonEncoder & JsonDecoder & Debug](a: A, text: string)
   assertEq(json.encode(a), text)
   assertEq(json.decode[A](text), Ok(a))
 
