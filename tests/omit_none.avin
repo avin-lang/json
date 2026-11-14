@@ -1,0 +1,131 @@
+module tests
+
+// Leaving a field whose value is `None` out of the object: per field with `@JsonOmitNone`, and for
+// every field with `json.encode(value, omitNone = true)`; and decoding a field the encoder left out.
+import dev.avinlang.json
+import dev.avinlang.json.{JsonDecoder, JsonEncoder, JsonKey, JsonOmit, JsonOmitNone, JsonTag, JsonWriter}
+
+data Contact(name: string, @JsonOmitNone email: Option[string], phone: Option[string]) derives JsonEncoder, JsonDecoder
+
+data Inner(@JsonOmitNone note: Option[string]) derives JsonEncoder, JsonDecoder
+
+data Outer(@JsonOmitNone inner: Option[Inner], items: Vector[Option[int]]) derives JsonEncoder, JsonDecoder
+
+data Rename(@JsonOmitNone name: Option[Option[string]]) derives JsonEncoder, JsonDecoder
+
+data Renamed(@JsonOmitNone @ JsonKey("e-mail") email: Option[string]) derives JsonEncoder, JsonDecoder
+
+data Both(@JsonOmitNone @ JsonOmit hidden: Option[int] = Some(1), shown: int) derives JsonEncoder, JsonDecoder
+
+data Defaulted(@JsonOmitNone n: Option[int] = Some(3)) derives JsonEncoder, JsonDecoder
+
+data Marked(@JsonOmitNone count: int, @JsonOmitNone tags: Vector[string]) derives JsonEncoder, JsonDecoder
+
+data Generic[A](@JsonOmitNone value: Option[A]) derives JsonEncoder, JsonDecoder
+
+data Branches(
+    label: string,
+    @JsonOmitNone left: Option[Branches],
+    @JsonOmitNone right: Option[Branches]
+) derives JsonEncoder, JsonDecoder
+
+@JsonTag("kind")
+data Run derives JsonEncoder, JsonDecoder
+  Started(@JsonOmitNone by: Option[string])
+  Stopped(code: Option[int])
+
+both[A: JsonEncoder + JsonDecoder + Debug](a: A, text: string)
+  assertEq(json.encode(a), text)
+  assertEq(json.decode[A](text), Ok(a))
+
+@test("a field marked @JsonOmitNone is left out when None and written when Some; an unmarked one is still null")
+perField()
+  both(Contact("Ada", None, None), "{\"name\":\"Ada\",\"phone\":null}")
+  both(Contact("Ada", Some("a@b"), None), "{\"name\":\"Ada\",\"email\":\"a@b\",\"phone\":null}")
+  both(Contact("Ada", Some(""), Some("1")), "{\"name\":\"Ada\",\"email\":\"\",\"phone\":\"1\"}")
+
+@test("a missing Option field decodes as None, and so does one written null")
+missingIsNone()
+  assertEq(json.decode[Contact]("{\"name\":\"Ada\"}"), Ok(Contact("Ada", None, None)))
+  assertEq(json.decode[Contact]("{\"name\":\"Ada\",\"email\":null,\"phone\":null}"), Ok(Contact("Ada", None, None)))
+  assertEq(json.decode[Contact]("{\"phone\":\"2\",\"name\":\"Ada\"}"), Ok(Contact("Ada", None, Some("2"))))
+
+@test("the encoder option omits every None field, marked or not")
+encoderOption()
+  assertEq(json.encode(Contact("Ada", None, None), omitNone = true), "{\"name\":\"Ada\"}")
+  assertEq(json.encode(Contact("Ada", None, Some("1")), true), "{\"name\":\"Ada\",\"phone\":\"1\"}")
+  assertEq(json.encode(Contact("Ada", None, None), omitNone = false), "{\"name\":\"Ada\",\"phone\":null}")
+
+@test("an object of only omitted fields is an empty object, and reads back")
+emptyObject()
+  both(Inner(None), "{}")
+  assertEq(json.encode(Contact("", None, None), omitNone = true), "{\"name\":\"\"}")
+
+@test("nested Options: the omission applies at each level's own fields, and an array's None stays null")
+nested()
+  both(Outer(None, []), "{\"items\":[]}")
+  both(Outer(Some(Inner(None)), [None, Some(1)]), "{\"inner\":{},\"items\":[null,1]}")
+  both(Outer(Some(Inner(Some("n"))), [None]), "{\"inner\":{\"note\":\"n\"},\"items\":[null]}")
+  assertEq(json.encode(Outer(None, [None]), omitNone = true), "{\"items\":[null]}")
+
+@test("an Option of an Option: None is left out, Some(None) is null and reads back as None, Some(Some) is the value")
+optionOfOption()
+  both(Rename(None), "{}")
+  both(Rename(Some(Some("x"))), "{\"name\":\"x\"}")
+  assertEq(json.encode(Rename(Some(None))), "{\"name\":null}")
+  assertEq(json.decode[Rename]("{\"name\":null}"), Ok(Rename(None)))
+  assertEq(json.encode(Rename(Some(None)), omitNone = true), "{\"name\":null}")
+
+@test("the omission meets a renamed key, @JsonOmit, a default and non-Option fields")
+neighbours()
+  both(Renamed(None), "{}")
+  both(Renamed(Some("a")), "{\"e-mail\":\"a\"}")
+  assertEq(json.encode(Both(Some(5), 2)), "{\"shown\":2}")
+  assertEq(json.encode(Both(None, 2)), "{\"shown\":2}")
+  assertEq(json.decode[Both]("{\"shown\":2,\"hidden\":9}"), Ok(Both(Some(1), 2)))
+  assertEq(json.encode(Defaulted(None)), "{}")
+  assertEq(json.encode(Defaulted(Some(4))), "{\"n\":4}")
+  // A field left out takes its default when read, not None: the default here is Some(3).
+  assertEq(json.decode[Defaulted]("{}"), Ok(Defaulted(Some(3))))
+  assertEq(json.decode[Defaulted]("{\"n\":null}"), Ok(Defaulted(None)))
+  both(Marked(0, []), "{\"count\":0,\"tags\":[]}")
+
+@test("generic instances, recursive types and variants with a discriminator")
+omittedShapes()
+  both(Generic[int](None), "{}")
+  both(Generic[int](Some(-2147483648)), "{\"value\":-2147483648}")
+  both(Generic[string](Some("é😀")), "{\"value\":\"é😀\"}")
+  both(Generic[Inner](Some(Inner(None))), "{\"value\":{}}")
+  both(Branches("a", None, Some(Branches("b", None, None))), "{\"label\":\"a\",\"right\":{\"label\":\"b\"}}")
+  both[Run](Started(None), "{\"kind\":\"Started\"}")
+  both[Run](Started(Some("me")), "{\"kind\":\"Started\",\"by\":\"me\"}")
+  both[Run](Stopped(None), "{\"kind\":\"Stopped\",\"code\":null}")
+  assertEq(json.encode[Run](Stopped(None), omitNone = true), "{\"kind\":\"Stopped\"}")
+
+@test("a top-level None and collections of Options are null, with or without the option")
+notFields()
+  assertEq(json.encode[Option[int]](None, omitNone = true), "null")
+  assertEq(json.encode([Some(1), None], omitNone = true), "[1,null]")
+  assertEq(json.encode([Contact("a", None, None)], omitNone = true), "[{\"name\":\"a\"}]")
+
+@test("a JsonWriter made with omitNone omits for every encoder written through it, and says so")
+writerFlag()
+  val text = StringWriter()
+  val out = JsonWriter(text, omitNone = true)
+  assert(out.omitNone)
+  out.beginArray()
+  Contact("a", None, None).encode(out)
+  Contact("b", Some("e"), None).encode(out)
+  out.endArray()
+  assertEq(text.text, "[{\"name\":\"a\"},{\"name\":\"b\",\"email\":\"e\"}]")
+  assert(!JsonWriter(StringWriter()).omitNone)
+
+@test("isJsonNone is true only for an Option's None")
+isJsonNoneAnswers()
+  val none: Option[int] = None
+  assert(none.isJsonNone())
+  assert(!Some(0).isJsonNone())
+  assert(!Some(none).isJsonNone())
+  assert(!0.isJsonNone())
+  assert(!"".isJsonNone())
+  assert(!Inner(None).isJsonNone())

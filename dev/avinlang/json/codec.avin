@@ -7,9 +7,11 @@ module dev.avinlang.json
 
 import avin.io.Reader
 
-// A value that writes itself as JSON.
+// A value that writes itself as JSON. `isJsonNone` is whether the value is an `Option`'s `None`, which a
+// field marked `@JsonOmitNone`, or any field written by a writer that omits `None`, leaves out.
 trait JsonEncoder
   encode(out: JsonWriter)
+  isJsonNone() -> bool = false
 
 // A value read from JSON. `whenMissing` is the value of a field absent from the input, where the type
 // has one: `None` for an `Option`, and nothing for any other type, whose absence is an error.
@@ -29,10 +31,16 @@ impl Annotation for JsonTag
 // default.
 object JsonOmit: Annotation
 
-// `value` as compact JSON text.
-encode[A: JsonEncoder](value: A) -> string
+// A field left out of the object where its value is `None`, rather than written as `null`; any other
+// value is written. A field absent from the input is `None` whether or not it is marked.
+object JsonOmitNone: Annotation
+
+// `value` as compact JSON text. With `omitNone`, every field whose value is `None` is left out, as if
+// each were marked `@JsonOmitNone`; a `None` that is not a field, such as an array's element, is
+// still `null`.
+encode[A: JsonEncoder](value: A, omitNone: bool = false) -> string
   val text = StringWriter()
-  value.encode(JsonWriter(text))
+  value.encode(JsonWriter(text, omitNone))
   text.text
 
 // The value of type `A` that `text` writes, with nothing but white space around it, or the first
@@ -45,6 +53,11 @@ decode[A: JsonDecoder](text: string, maxDepth: int = defaultMaxDepth) -> Result[
 // to read the source is an error at the place reading stopped.
 decode[A: JsonDecoder](source: Reader, maxDepth: int = defaultMaxDepth) -> Result[A, JsonError] =
   decodeAll[A](JsonReader.fromReader(source, maxDepth))
+
+// The value of type `A` that the UTF-8 text `bytes` writes, as `decode` reads a string; bytes that
+// are not UTF-8 are an error at the first of them.
+decode[A: JsonDecoder](bytes: Array[byte], maxDepth: int = defaultMaxDepth) -> Result[A, JsonError] =
+  decodeAll[A](JsonReader.fromBytes(bytes, maxDepth))
 
 private decodeAll[A: JsonDecoder](r: JsonReader) -> Result[A, JsonError]
   val value = A.decode(r)?
@@ -62,6 +75,7 @@ private tagOf(t: TypeShape) -> string = t.annotation[JsonTag]().map(tag -> tag.k
 
 impl JsonEncoder for bool
   encode(out: JsonWriter) = out.bool(self)
+  isJsonNone() -> bool = false
 
 impl JsonDecoder for bool
   static decode(r: JsonReader) -> Result[bool, JsonError] = r.readBool()
@@ -69,6 +83,7 @@ impl JsonDecoder for bool
 
 impl JsonEncoder for int
   encode(out: JsonWriter) = out.long(long(self))
+  isJsonNone() -> bool = false
 
 impl JsonDecoder for int
   static decode(r: JsonReader) -> Result[int, JsonError] = r.readInt()
@@ -76,6 +91,7 @@ impl JsonDecoder for int
 
 impl JsonEncoder for long
   encode(out: JsonWriter) = out.long(self)
+  isJsonNone() -> bool = false
 
 impl JsonDecoder for long
   static decode(r: JsonReader) -> Result[long, JsonError] = r.readLong()
@@ -84,6 +100,7 @@ impl JsonDecoder for long
 // A NaN or an infinity, which JSON cannot write, is written `null`, and does not read back as a `real`.
 impl JsonEncoder for real
   encode(out: JsonWriter) = out.real(self)
+  isJsonNone() -> bool = false
 
 impl JsonDecoder for real
   static decode(r: JsonReader) -> Result[real, JsonError] = r.readReal()
@@ -91,6 +108,7 @@ impl JsonDecoder for real
 
 impl JsonEncoder for string
   encode(out: JsonWriter) = out.string(self)
+  isJsonNone() -> bool = false
 
 impl JsonDecoder for string
   static decode(r: JsonReader) -> Result[string, JsonError] = r.readString()
@@ -109,6 +127,7 @@ impl[A: JsonEncoder] JsonEncoder for Option[A]
   encode(out: JsonWriter) = self match
     Some(a) -> a.encode(out)
     None -> out.writeNull()
+  override isJsonNone() -> bool = self is None
 
 impl[A: JsonDecoder] JsonDecoder for Option[A]
   static decode(r: JsonReader) -> Result[Option[A], JsonError] =
@@ -217,7 +236,7 @@ impl ShapeVisitor for FieldWriter
 
 impl FieldWriter
   field[F: JsonEncoder](f: FieldShape, value: F) -> FieldWriter
-    if !f.has(JsonOmit)
+    if !f.has(JsonOmit) && !(value.isJsonNone() && (out.omitNone || f.has(JsonOmitNone)))
       out.key(keyOf(f))
       value.encode(out)
     self

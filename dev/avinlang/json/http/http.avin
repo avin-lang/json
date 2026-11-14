@@ -1,0 +1,72 @@
+module dev.avinlang.json.http
+
+// JSON over the standard library's HTTP server: a response whose body is a value encoded as JSON, and
+// a request's body decoded as a type, a body that is not JSON answered with a JSON error a client can
+// read. The module is the package's feature `http`, so a program that uses JSON without HTTP compiles
+// none of it.
+
+import avin.net.http.{Response, ServerRequest}
+import dev.avinlang.json
+import dev.avinlang.json.{defaultMaxDepth, JsonDecoder, JsonEncoder, JsonError, JsonOmitNone}
+
+// A response of `status` whose body is `value` encoded as compact JSON, of the type
+// `application/json`. With `omitNone`, every field whose value is `None` is left out.
+jsonResponse[A: JsonEncoder](status: int, value: A, omitNone: bool = false) -> Response =
+  Response.json(status, json.encode(value, omitNone))
+
+// Why a request's body is not a value of the type asked for.
+data BodyError
+  // The request's `Content-Type` is not JSON's, or it has none.
+  UnsupportedType(found: Option[string])
+  // The body is not JSON, or not a value of the type: the decoder's error, with its path and place.
+  Malformed(error: JsonError)
+
+// The JSON object a `BodyError` is answered with.
+private data Problem(
+    error: string,
+    detail: string,
+    @JsonOmitNone path: Option[string] = None,
+    @JsonOmitNone line: Option[long] = None,
+    @JsonOmitNone column: Option[long] = None
+) derives JsonEncoder
+
+impl BodyError
+  // The status a client is answered: `415` for a body that is not JSON's type, `400` for one that
+  // does not decode.
+  status -> int = self match
+    UnsupportedType(_) -> 415
+    Malformed(_) -> 400
+
+  // The response a client is answered: the status, and a JSON object of `error`, a `detail` saying
+  // what is wrong and, for a body that does not decode, the `path` to the value at fault, where there
+  // is one, and its `line` and `column`.
+  response -> Response = self match
+    UnsupportedType(found) ->
+      val detail = found match
+        Some(t) -> s"expected application/json, found $t"
+        None -> "expected application/json, found no Content-Type"
+      jsonResponse(415, Problem("unsupported media type", detail))
+    Malformed(e) ->
+      val path = if e.path.isEmpty then None else Some(e.pathText())
+      jsonResponse(400, Problem("invalid JSON body", e.message, path, Some(e.line), Some(e.column)))
+
+// Whether a `Content-Type` value is JSON's: `application/json`, or a type `application/…+json`, with
+// any parameters, without regard to case.
+isJsonType(contentType: string) -> bool
+  val semicolon = contentType.indexOf(';')
+  val mediaType = (if semicolon < 0 then contentType else contentType.slice(0, semicolon)).trim.toLower
+  mediaType == "application/json" || mediaType.startsWith("application/") && mediaType.endsWith("+json")
+
+impl ServerRequest
+  // The body decoded as an `A`, read as UTF-8 with arrays and objects nested at most `maxDepth` deep;
+  // an `UnsupportedType` where the request's `Content-Type` is not JSON's, and a `Malformed` where the
+  // body does not decode.
+  decodeJson[A: JsonDecoder](maxDepth: int = defaultMaxDepth) -> Result[A, BodyError]
+    val contentType = header("Content-Type")
+    if !contentType.exists(t -> isJsonType(t)) then return Err(UnsupportedType(contentType))
+    json.decode[A](body, maxDepth).mapErr(e -> Malformed(e))
+
+  // The body decoded as an `A`, or the response a client is answered for a body that does not
+  // decode, so a handler answering a `Result` takes it with `?`.
+  jsonBody[A: JsonDecoder](maxDepth: int = defaultMaxDepth) -> Result[A, Response] =
+    decodeJson[A](maxDepth).mapErr(e -> e.response)

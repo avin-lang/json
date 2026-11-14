@@ -1,0 +1,158 @@
+module tests
+
+// The feature `http`: a response whose body is a value encoded as JSON, and a request's body decoded
+// as a type, with a JSON error for a body of the wrong type or one that does not decode.
+import avin.net.http.{Response, Router, Route, ServerRequest}
+import dev.avinlang.json
+import dev.avinlang.json.{Json, JsonDecoder, JsonEncoder, JsonOmitNone}
+import dev.avinlang.json.http.{BodyError, isJsonType, jsonResponse, Malformed, UnsupportedType}
+
+data Place(street: string, city: string) derives JsonEncoder, JsonDecoder
+
+data NewTodo(
+    title: string,
+    @JsonOmitNone notes: Option[string] = None,
+    home: Option[Place] = None
+) derives JsonEncoder, JsonDecoder
+
+data TodoPatch(title: Option[Option[string]] = None) derives JsonEncoder, JsonDecoder
+
+post(body: string, contentType: Option[string] = Some("application/json")) -> ServerRequest =
+  val headers = contentType match
+    Some(t) -> Vector(("Content-Type", t))
+    None -> Vector.empty[(string, string)]()
+  ServerRequest("POST", "/todos", headers, body.utf8)
+
+postBytes(body: Array[byte]) -> ServerRequest = ServerRequest(
+  "POST",
+  "/todos",
+  Vector(("Content-Type", "application/json")),
+  body
+)
+
+// The response's body, read back as JSON.
+bodyOf(r: Response) -> Json = json.parse(r.text).ok.get
+
+@test("jsonResponse encodes the value, sets the JSON content type and the status's reason")
+responses()
+  val r = jsonResponse(201, NewTodo("milk"))
+  assertEq(r.status, 201)
+  assertEq(r.reason, "Created")
+  assertEq(r.header("content-type"), Some("application/json"))
+  assertEq(r.text, "{\"title\":\"milk\",\"home\":null}")
+  assertEq(jsonResponse(200, NewTodo("milk"), omitNone = true).text, "{\"title\":\"milk\"}")
+  assertEq(jsonResponse(200, [1, 2]).text, "[1,2]")
+  assertEq(jsonResponse(200, "é\"").text, "\"é\\\"\"")
+  assertEq(jsonResponse(404, Json.obj(("error", Json.str("gone")))).text, "{\"error\":\"gone\"}")
+  assertEq(jsonResponse[Option[int]](200, None).text, "null")
+
+@test("a JSON body decodes into its type, and a response and a request round-trip a value")
+decodes()
+  assertEq(post("{\"title\":\"milk\"}").decodeJson[NewTodo](), Ok(NewTodo("milk")))
+  assertEq(
+    post("{\"home\":{\"street\":\"1 Main\",\"city\":\"Él\"},\"title\":\"x\",\"notes\":\"n\"}").jsonBody[NewTodo]().ok,
+    Some(NewTodo("x", Some("n"), Some(Place("1 Main", "Él"))))
+  )
+  val todo = NewTodo("milk", Some("2%"), Some(Place("s", "c")))
+  assertEq(post(jsonResponse(200, todo).text).decodeJson[NewTodo](), Ok(todo))
+  assertEq(postBytes(jsonResponse(200, todo, omitNone = true).body).decodeJson[NewTodo](), Ok(todo))
+  assertEq(post("  [1, 2] ").decodeJson[Vector[int]](), Ok([1, 2]))
+
+@test("nested Options and an Option of an Option decode from a body: missing and null are None")
+bodyOptions()
+  assertEq(post("{}").decodeJson[TodoPatch](), Ok(TodoPatch(None)))
+  assertEq(post("{\"title\":null}").decodeJson[TodoPatch](), Ok(TodoPatch(None)))
+  assertEq(post("{\"title\":\"t\"}").decodeJson[TodoPatch](), Ok(TodoPatch(Some(Some("t")))))
+  assertEq(post("{\"title\":\"x\",\"home\":null}").decodeJson[NewTodo](), Ok(NewTodo("x")))
+
+@test("the content type is JSON's with parameters, in any case, or application/…+json")
+contentTypes()
+  assert(isJsonType("application/json"))
+  assert(isJsonType("application/json; charset=utf-8"))
+  assert(isJsonType("  Application/JSON ;charset=UTF-8"))
+  assert(isJsonType("application/problem+json"))
+  assert(isJsonType("application/vnd.api+json; v=1"))
+  assert(!isJsonType("text/plain"))
+  assert(!isJsonType("text/json"))
+  assert(!isJsonType("application/jsonx"))
+  assert(!isJsonType("application/x-www-form-urlencoded"))
+  assert(!isJsonType("application/+json-ish"))
+  assert(!isJsonType(""))
+  assertEq(post("{\"title\":\"a\"}", Some("application/json; charset=utf-8")).decodeJson[NewTodo](), Ok(NewTodo("a")))
+
+@test("a body of another content type, or none, is UnsupportedType, answered 415 with a JSON error")
+wrongType()
+  assertEq(
+    post("{\"title\":\"a\"}", Some("text/plain")).decodeJson[NewTodo](),
+    Err(UnsupportedType(Some("text/plain")))
+  )
+  assertEq(post("{\"title\":\"a\"}", None).decodeJson[NewTodo](), Err(UnsupportedType(None)))
+  val r = post("{}", Some("text/plain")).jsonBody[NewTodo]().err.get
+  assertEq(r.status, 415)
+  assertEq(r.header("Content-Type"), Some("application/json"))
+  assertEq(r.text, "{\"error\":\"unsupported media type\",\"detail\":\"expected application/json, found text/plain\"}")
+  val none = post("{}", None).jsonBody[NewTodo]().err.get
+  assertEq(
+    none.text,
+    "{\"error\":\"unsupported media type\",\"detail\":\"expected application/json, found no Content-Type\"}"
+  )
+  assertEq(UnsupportedType(None).status, 415)
+
+@test("a body that does not decode is Malformed, answered 400 with the message, path, line and column")
+malformed()
+  val e = post("{\"title\": \"x\",\n \"home\": {\"street\": 1}}").decodeJson[NewTodo]()
+  assertEq(e.err.map(b -> b.status), Some(400))
+  val r = post("{\"title\": \"x\",\n \"home\": {\"street\": 1}}").jsonBody[NewTodo]().err.get
+  assertEq(r.status, 400)
+  assertEq(r.reason, "Bad Request")
+  assertEq(r.header("Content-Type"), Some("application/json"))
+  assertEq(
+    r.text,
+    "{\"error\":\"invalid JSON body\",\"detail\":\"expected a string, found a number\",\"path\":\"home.street\",\"line\":2,\"column\":21}"
+  )
+
+@test("a fault in the text has the path of the value being read, or none at the top; other bad bodies are each 400")
+notJson()
+  val syntax = bodyOf(post("{\"title\": }").jsonBody[NewTodo]().err.get)
+  assertEq(syntax("error").asString, Some("invalid JSON body"))
+  assertEq(syntax("path").asString, Some("title"))
+  assertEq(syntax("line").asLong, Some(1))
+  assertEq(syntax("column").asLong, Some(11))
+  val top = bodyOf(post("nope").jsonBody[NewTodo]().err.get)
+  assertEq(top.has("path"), false)
+  assertEq(top("line").asLong, Some(1))
+  assertEq(top("column").asLong, Some(1))
+  for text in ["", "   ", "{\"title\":\"a\"} x", "{}", "[]", "null", "{\"title\":\"a\",\"title\":\"b\"}"]
+    val r = post(text).jsonBody[NewTodo]().err.get
+    assertEq(r.status, 400)
+    assertEq(bodyOf(r)("error").asString, Some("invalid JSON body"))
+  assertEq(bodyOf(post("{}").jsonBody[NewTodo]().err.get)("detail").asString, Some("missing field \"title\""))
+
+@test("bytes that are not UTF-8 are a 400 at the first of them, not read as replacement characters")
+notUtf8()
+  val bad = Array.newBuilder[byte]()
+  for b in "{\"title\":\"a".utf8 do bad.addOne(b)
+  bad.addOne(byte(0xff))
+  for b in "\"}".utf8 do bad.addOne(b)
+  val r = postBytes(bad.result()).decodeJson[NewTodo]()
+  assert(r.err.exists(e -> e is Malformed(_)))
+  assertEq(r.err.get.status, 400)
+
+@test("the depth limit applies to a body, and a body within it decodes")
+depth()
+  assertEq(post("[[1]]").decodeJson[Vector[Vector[int]]](1).err.map(b -> b.status), Some(400))
+  assertEq(post("[[1]]").decodeJson[Vector[Vector[int]]](2), Ok([[1]]))
+  assertEq(post("[[1]]").jsonBody[Json](1).err.map(r -> r.status), Some(400))
+
+private create(request: ServerRequest) -> Response = request.jsonBody[NewTodo]() match
+  Ok(t) -> jsonResponse(201, t, omitNone = true)
+  Err(r) -> r
+
+@test("a router's handler takes a body and answers JSON, or the body's error")
+throughRouter()
+  val router = Router([Route.post("/todos", create)])
+  val ok = router.handle(post("{\"title\":\"milk\"}"))
+  assertEq(ok.status, 201)
+  assertEq(ok.text, "{\"title\":\"milk\"}")
+  assertEq(router.handle(post("{\"title\":3}")).status, 400)
+  assertEq(router.handle(post("{}", Some("text/csv"))).status, 415)

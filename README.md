@@ -294,10 +294,60 @@ main()
   read where there is one.
 - `@JsonKey(name)` renames a field or a variant, `@JsonTag(key)` names a type's discriminator key,
   and `@JsonOmit` leaves a field unwritten and unread, so a decoded value takes its default.
+- **`@JsonOmitNone` leaves a field out where its value is `None`**, rather than writing `null`, and
+  writes it otherwise; **`json.encode(value, omitNone = true)`** does so for every field of every
+  object written, as if each were marked. A `None` that is not a field, an array's element or the
+  whole value, is still `null`. Since a field absent from the input is `None`, or its default where
+  it has one, what is written reads back. An `Option[Option[A]]` field's `Some(None)` is written
+  `null`, and reads back as `None`.
+- **`json.decode[A](bytes: Array[byte], maxDepth)`** reads UTF-8 text given as bytes, bytes that are
+  not UTF-8 an error at the first of them.
 - A type deriving them where a field's type lacks them is an error at the `derives` entry naming the
   field. A union has an encoder where its members do, and no decoder; an open class has an encoder
   and no decoder, since a value of its type could be of any subclass; a field typed as the `Map`
   trait has neither, its `HashMap` or `TreeMap` type both.
+
+## Over HTTP
+
+The module **`dev.avinlang.json.http`** joins the derived codecs to the standard library's HTTP
+server, `avin.net.http`:
+
+```avin
+import avin.net.http.{Response, Route, Router, ServerRequest}
+import dev.avinlang.json.{JsonDecoder, JsonEncoder}
+import dev.avinlang.json.http.jsonResponse
+
+data NewTodo(title: string, notes: Option[string] = None) derives JsonEncoder, JsonDecoder
+
+create(request: ServerRequest) -> Response = request.jsonBody[NewTodo]() match
+  Ok(todo) -> jsonResponse(201, todo, omitNone = true)
+  Err(answer) -> answer
+
+val router = Router([Route.post("/todos", create)])
+```
+
+| Call | Gives |
+| --- | --- |
+| `jsonResponse(status, value, omitNone = false)` | A response of `status` whose body is `value` encoded as compact JSON, of the type `application/json` |
+| `request.decodeJson[A](maxDepth = defaultMaxDepth)` | The body decoded as an `A`, or a `BodyError` |
+| `request.jsonBody[A](maxDepth = defaultMaxDepth)` | The body decoded as an `A`, or the `Response` a client is answered, so a handler answering a `Result` takes it with `?` |
+| `isJsonType(contentType)` | Whether a `Content-Type` is JSON's |
+
+- **The request's `Content-Type` must be JSON's**: `application/json` or a type `application/…+json`,
+  with any parameters and without regard to case. Any other type, or none, is the `BodyError`
+  `UnsupportedType(found)`, answered `415`.
+- **A body that does not decode** is `Malformed(error)`, the decoder's `JsonError`, answered `400`.
+  The body is read as UTF-8 bytes, so bytes that are not UTF-8 are an error rather than read as
+  replacement characters.
+- **The answer is a JSON object**: `error`, a `detail` saying what is wrong and, for a body that does
+  not decode, the `path` to the value at fault where there is one, and its `line` and `column`:
+
+```text
+{"error":"invalid JSON body","detail":"expected a string, found a number","path":"home.street","line":2,"column":21}
+{"error":"unsupported media type","detail":"expected application/json, found text/plain"}
+```
+
+A `BodyError`'s `status` and `response` give its status and that answer.
 
 ## Tests
 
