@@ -54,13 +54,31 @@ private val MemberValue = 7
 private object NoInput: Reader
   override read(max: int) -> Result[Array[byte], IoError] = Ok(Array.empty[byte]())
 
+// An array or object of a tree being read as events: its elements or members, how many have been
+// given, and for an object whether the next event is the value of the member just named.
+private class TreeFrame(val isObject: bool, val items: Vector[Json], val members: Vector[(string, Json)])
+  var at = 0
+  var onValue = false
+
 // Reads one JSON value from a source, by the grammar `parse` reads, as a stream of events. `next`
 // gives each event in turn and `peek` the one coming; the rest read a whole value of a kind at a
 // time, which is what a decoder written for a type calls. The first thing wrong with the text, or a
 // failure to read it, is the `Err` of that call and of every call after it.
 //
+// A reader made by `JsonReader.fromTree` gives the events of a `Json` value already in hand, in the
+// order its text would: every call above, and so every derived decoder, reads it as it reads text.
+// Its errors have no place in text, so their line, column and offset are 0.
+//
 // A reader belongs to the thread that reads it, as its source does.
-class JsonReader(private val source: Reader, private val maxDepth: int, private var chunk: Array[byte])
+class JsonReader(
+    private val source: Reader,
+    private val maxDepth: int,
+    private var chunk: Array[byte],
+    private val tree: Option[Json] = None
+)
+  // For a reader of a tree: the arrays and objects it is inside, and whether the root was given.
+  private val frames = Buffer[TreeFrame]()
+  private var treeStarted = false
   // The next byte to read in `chunk`, and how many bytes of the text came before `chunk`.
   private var pos = 0
   private var base: long = 0
@@ -100,7 +118,7 @@ class JsonReader(private val source: Reader, private val maxDepth: int, private 
     r
 
   // How many arrays and objects the reader is inside.
-  depth() -> int = open.length
+  depth() -> int = open.length + frames.length
 
   // An error saying `message`, placed where the last event given or peeked began.
   error(message: string) -> JsonError = JsonError(message, tokenLine, tokenColumn, tokenOffset)
@@ -227,12 +245,56 @@ class JsonReader(private val source: Reader, private val maxDepth: int, private 
   // The next event, or the fault that ends the reading; a fault, once met, is met again.
   private step() -> Result[JsonEvent, JsonError]
     if failure is Some(e) then return Err(e)
-    val r = advance()
+    val r = if tree is Some(root) then advanceTree(root) else advance()
     if readFailure is Some(e)
       failure = Some(e)
       return Err(e)
     if r is Err(e) then failure = Some(e)
     r
+
+  // The next event of the tree `root`.
+  private advanceTree(root: Json) -> Result[JsonEvent, JsonError]
+    tokenLine = 0
+    tokenColumn = 0
+    tokenOffset = 0
+    if frames.isEmpty
+      if treeStarted then return Ok(EndOfText)
+      treeStarted = true
+      return treeValue(root)
+    val top = frames(frames.length - 1)
+    if top.isObject
+      if top.onValue
+        top.onValue = false
+        top.at += 1
+        return treeValue(top.members(top.at - 1).1)
+      if top.at >= top.members.length
+        frames.remove(frames.length - 1)
+        return Ok(EndObject)
+      top.onValue = true
+      return Ok(MemberName(top.members(top.at).0))
+    if top.at >= top.items.length
+      frames.remove(frames.length - 1)
+      return Ok(EndArray)
+    top.at += 1
+    treeValue(top.items(top.at - 1))
+
+  // The event that gives `value`: the whole of a scalar, the start of an array or object.
+  private treeValue(value: Json) -> Result[JsonEvent, JsonError] = value match
+    Null -> Ok(NullValue)
+    Bool(b) -> Ok(BoolValue(b))
+    Long(n) -> Ok(LongValue(n))
+    Real(x) -> Ok(RealValue(x))
+    Str(s) -> Ok(StringValue(s))
+    Arr(items) ->
+      if frames.length >= maxDepth then return Err(treeTooDeep())
+      frames.addOne(TreeFrame(false, items, []))
+      Ok(StartArray)
+    Obj(members) ->
+      if frames.length >= maxDepth then return Err(treeTooDeep())
+      frames.addOne(TreeFrame(true, [], members))
+      Ok(StartObject)
+
+  private treeTooDeep() -> JsonError = error(s"arrays and objects nested more than $maxDepth deep")
 
   private advance() -> Result[JsonEvent, JsonError]
     skipSpace()
@@ -643,6 +705,11 @@ object JsonReader
   // A reader of `text`.
   fromString(text: string, maxDepth: int = defaultMaxDepth) -> JsonReader =
     JsonReader(NoInput, maxDepth, Array.tabulate(text.byteLength, i -> text.byteAt(i)))
+
+  // A reader of the `Json` value `tree`, giving the events its text would. Arrays and objects may
+  // nest `maxDepth` deep, as in `parse`.
+  fromTree(tree: Json, maxDepth: int = defaultMaxDepth) -> JsonReader =
+    JsonReader(NoInput, maxDepth, Array.empty[byte](), Some(tree))
 
   // A reader of text given as its UTF-8 bytes.
   fromBytes(bytes: Array[byte], maxDepth: int = defaultMaxDepth) -> JsonReader = JsonReader(NoInput, maxDepth, bytes)

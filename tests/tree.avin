@@ -1,0 +1,455 @@
+module tests
+
+// Decoding a type from a `Json` value already in hand, and encoding one to a `Json` value: the same
+// derived decoders and encoders as for text, over every shape of type the package derives for. Each
+// value decodes from its tree as from its text, and encodes to the tree its text parses to.
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.json.JsonEncoder
+import dev.avinlang.json.JsonDecoder
+import dev.avinlang.json.JsonEvent
+import dev.avinlang.json.JsonKey
+import dev.avinlang.json.JsonOmit
+import dev.avinlang.json.JsonOmitNone
+import dev.avinlang.json.JsonReader
+import dev.avinlang.json.JsonTag
+
+data TrAddress(street: string, city: string) derives JsonEncoder, JsonDecoder
+
+data TrPerson(
+    @JsonKey("full_name") name: string,
+    age: int,
+    home: Option[TrAddress],
+    @JsonOmit visits: int = 0
+) derives JsonEncoder, JsonDecoder
+
+@JsonTag("kind")
+data TrShape derives JsonEncoder, JsonDecoder
+  @JsonKey("circle") TrCircle(radius: real)
+  @JsonKey("rect") TrRect(width: real, height: real)
+  @JsonKey("Empty") TrEmpty
+
+data TrEvent derives JsonEncoder, JsonDecoder
+  @JsonKey("Started") TrStarted(at: long)
+  @JsonKey("Stopped") TrStopped(at: long, code: int)
+
+data TrColor derives Enumerable, JsonEncoder, JsonDecoder
+  @JsonKey("Red") TrRed
+  @JsonKey("Green") TrGreen
+  @JsonKey("Blue") TrBlue
+
+data TrMarker() derives JsonEncoder, JsonDecoder
+
+data TrBox[A](item: A) derives JsonEncoder, JsonDecoder
+
+data TrPair[A, B](first: A, second: B) derives JsonEncoder, JsonDecoder
+
+data TrNode(label: string, children: List[TrNode]) derives JsonEncoder, JsonDecoder
+
+data TrScalars(b: bool, i: int, n: long, x: real, s: string) derives JsonEncoder, JsonDecoder
+
+data TrOptional(a: Option[int], b: Option[Option[int]], c: Option[TrAddress]) derives JsonEncoder, JsonDecoder
+
+data TrLists(v: Vector[int], l: List[string], nested: Vector[Vector[TrShape]]) derives JsonEncoder, JsonDecoder
+
+data TrMaps(
+    byName: HashMap[string, int],
+    byId: TreeMap[int, string],
+    big: TreeMap[long, bool]
+) derives JsonEncoder, JsonDecoder
+
+data TrRaw(id: int, payload: Json) derives JsonEncoder, JsonDecoder
+
+data TrDefaults(a: int, b: int = a + 1, c: string = "c", d: Vector[int] = []) derives JsonEncoder, JsonDecoder
+
+data TrHidden(shown: int, @JsonOmit cache: string = "fresh", @JsonKey("x") renamed: int) derives JsonEncoder, JsonDecoder
+
+data TrSparse(name: string, @JsonOmitNone email: Option[string], phone: Option[string]) derives JsonEncoder, JsonDecoder
+
+class TrAccount(val id: long, owner: string, var balance: real) derives JsonEncoder, JsonDecoder
+  ownerName() -> string = owner
+
+data TrUri(uri: string) derives JsonEncoder, JsonDecoder
+
+data TrDocument(textDocument: TrUri, version: Option[int]) derives JsonEncoder, JsonDecoder
+
+data TrMessage(method: string, id: Option[int], params: TrDocument) derives JsonEncoder, JsonDecoder
+
+data TrItem(id: int, name: string, tags: Vector[string], at: TrPoint) derives JsonEncoder, JsonDecoder
+
+data TrPoint(x: real, y: real) derives JsonEncoder, JsonDecoder
+
+// The tree `text` parses to.
+tree(text: string) -> Json = json.parse(text).ok.get
+
+// `a` encodes to `text`, `text` decodes to `a` from the text and from its tree, the tree `a` encodes
+// to is the tree `text` parses to and renders as `text`, and that tree decodes back to `a`.
+sameTree[A: JsonEncoder & JsonDecoder & Debug](a: A, text: string)
+  val parsed = tree(text)
+  assertEq(json.decode[A](text), Ok(a))
+  assertEq(json.decode[A](parsed), Ok(a))
+  assertEq(json.decode[A](parsed), json.decode[A](text))
+  assertEq(json.toTree(a), parsed)
+  assertEq(s"${json.toTree(a)}", text)
+  assertEq(s"${json.toTree(a)}", json.encode(a))
+  assertEq(json.decode[A](json.toTree(a)), Ok(a))
+  assertEq(json.toTree(a, true), tree(json.encode(a, true)))
+
+// What decoding `text` as an `A` says is wrong, from the text and from its tree: both fail, with the
+// same path and message; the tree's error has no place, and its display is the path and message.
+failsAs[A: JsonDecoder](text: string) -> string = (json.decode[A](text), json.decode[A](tree(text))) match
+  (Err(fromText), Err(fromTree)) ->
+    assertEq(fromTree.pathText(), fromText.pathText())
+    assertEq(fromTree.message, fromText.message)
+    assertEq((fromTree.line, fromTree.column, fromTree.offset), (long(0), long(0), long(0)))
+    assertEq(fromTree.path, fromText.path)
+    s"$fromTree"
+  _ -> fail(s"expected both to fail: $text")
+
+// Every event the reader gives, to the end of the text.
+treeEvents(r: JsonReader) -> Vector[JsonEvent]
+  val all = Buffer[JsonEvent]()
+  loop
+    val e = r.next().ok.get
+    all.addOne(e)
+    if e is JsonEvent.EndOfText then return all.toVector
+
+@test("a data type with a renamed key, an omitted field and an Option decodes and encodes through a tree")
+treePerson()
+  sameTree(TrPerson("Ada", 36, None), "{\"full_name\":\"Ada\",\"age\":36,\"home\":null}")
+  sameTree(
+    TrPerson("Ada", 36, Some(TrAddress("1 Main", "Springfield"))),
+    "{\"full_name\":\"Ada\",\"age\":36,\"home\":{\"street\":\"1 Main\",\"city\":\"Springfield\"}}"
+  )
+  assertEq(
+    json.decode[TrPerson](tree("{\"visits\":5,\"full_name\":\"Ada\",\"age\":36}")),
+    Ok(TrPerson("Ada", 36, None, 0))
+  )
+  assertEq(json.toTree(TrPerson("Ada", 36, None, 99)), tree("{\"full_name\":\"Ada\",\"age\":36,\"home\":null}"))
+
+@test("sum types write their discriminator first, with a JsonTag key and JsonKey names, through a tree")
+sums()
+  sameTree[TrShape](TrRect(2.0, 3.0), "{\"kind\":\"rect\",\"width\":2.0,\"height\":3.0}")
+  sameTree[TrShape](TrCircle(1.5), "{\"kind\":\"circle\",\"radius\":1.5}")
+  sameTree[TrShape](TrEmpty, "{\"kind\":\"Empty\"}")
+  sameTree[TrEvent](TrStarted(5), "{\"type\":\"Started\",\"at\":5}")
+  sameTree[TrEvent](TrStopped(9, -1), "{\"type\":\"Stopped\",\"at\":9,\"code\":-1}")
+
+@test("an enumeration, a type of no fields and a type of one variant decode and encode through a tree")
+enumerations()
+  sameTree(TrColor.TrRed, "{\"type\":\"Red\"}")
+  sameTree(TrColor.TrGreen, "{\"type\":\"Green\"}")
+  sameTree(TrColor.TrBlue, "{\"type\":\"Blue\"}")
+  assertEq(TrColor.values.length, 3)
+  sameTree(TrMarker, "{}")
+  assertEq(json.decode[TrMarker](tree("{\"extra\":[1,{}]}")), Ok(TrMarker))
+  assertEq(
+    json.decode[Vector[TrColor]](tree("[{\"type\":\"Blue\"},{\"type\":\"Red\"}]")),
+    Ok([TrColor.TrBlue, TrColor.TrRed])
+  )
+
+@test("generic types decode and encode through a tree at each of their instances, nested")
+generics()
+  sameTree(TrBox(1), "{\"item\":1}")
+  sameTree(TrBox("s"), "{\"item\":\"s\"}")
+  sameTree(TrBox(TrBox(Some(2))), "{\"item\":{\"item\":2}}")
+  sameTree(TrBox[Option[int]](None), "{\"item\":null}")
+  sameTree(TrPair(TrColor.TrGreen, [1, 2]), "{\"first\":{\"type\":\"Green\"},\"second\":[1,2]}")
+  sameTree(TrBox(TrPair[TrShape, string](TrEmpty, "")), "{\"item\":{\"first\":{\"kind\":\"Empty\"},\"second\":\"\"}}")
+
+@test("a recursive type decodes and encodes through a tree")
+treeRecursive()
+  sameTree(
+    TrNode("root", [TrNode("a", []), TrNode("b", [TrNode("c", [])])]),
+    "{\"label\":\"root\",\"children\":[{\"label\":\"a\",\"children\":[]},{\"label\":\"b\",\"children\":[{\"label\":\"c\",\"children\":[]}]}]}"
+  )
+
+@test("scalars decode and encode through a tree, at their extremes")
+treeScalars()
+  sameTree(TrScalars(true, -7, 9000000000, 0.5, "hi"), "{\"b\":true,\"i\":-7,\"n\":9000000000,\"x\":0.5,\"s\":\"hi\"}")
+  sameTree(TrScalars(false, 0, 0, 0.0, ""), "{\"b\":false,\"i\":0,\"n\":0,\"x\":0.0,\"s\":\"\"}")
+  sameTree(
+    TrScalars(false, -2147483648, long(-9223372036854775807) - 1, -0.0, "é\n\"\\"),
+    "{\"b\":false,\"i\":-2147483648,\"n\":-9223372036854775808,\"x\":-0.0,\"s\":\"é\\n\\\"\\\\\"}"
+  )
+  sameTree(TrScalars(true, 2147483647, long(9223372036854775807), 1e300, "😀"), "{\"b\":true,\"i\":2147483647,\"n\":9223372036854775807,\"x\":1e+300,\"s\":\"😀\"}")
+
+@test("a value at the top is any encodable type, not only a derived one")
+treeTopLevel()
+  sameTree(42, "42")
+  sameTree("x", "\"x\"")
+  sameTree(true, "true")
+  sameTree(2.5, "2.5")
+  sameTree([Some(1), None], "[1,null]")
+  sameTree(Vector.empty[int](), "[]")
+  sameTree("", "\"\"")
+  sameTree(Json.obj(("a", Json.arr(Json.Null, Json.num(1)))), "{\"a\":[null,1]}")
+  assertEq(json.decode[Json](Json.Null), Ok(Json.Null))
+  assertEq(json.decode[Option[int]](Json.Null), Ok(None))
+  assertEq(json.decode[Option[int]](Json.num(3)), Ok(Some(3)))
+
+@test("options decode and encode through a tree; an absent Option field is None")
+treeOptions()
+  sameTree(
+    TrOptional(Some(1), Some(Some(2)), Some(TrAddress("s", "c"))),
+    "{\"a\":1,\"b\":2,\"c\":{\"street\":\"s\",\"city\":\"c\"}}"
+  )
+  sameTree(TrOptional(None, None, None), "{\"a\":null,\"b\":null,\"c\":null}")
+  assertEq(json.decode[TrOptional](Json.obj()), Ok(TrOptional(None, None, None)))
+  assertEq(json.toTree(TrOptional(None, Some(None), None)), tree("{\"a\":null,\"b\":null,\"c\":null}"))
+
+@test("vectors and lists decode and encode through a tree, empty, of one and of many")
+treeLists()
+  sameTree(TrLists([], [], []), "{\"v\":[],\"l\":[],\"nested\":[]}")
+  sameTree(TrLists([1], ["a"], [[]]), "{\"v\":[1],\"l\":[\"a\"],\"nested\":[[]]}")
+  sameTree(
+    TrLists([1, 2, 3], ["a", "b"], [[TrEmpty], [TrCircle(1.0), TrEmpty]]),
+    "{\"v\":[1,2,3],\"l\":[\"a\",\"b\"],\"nested\":[[{\"kind\":\"Empty\"}],[{\"kind\":\"circle\",\"radius\":1.0},{\"kind\":\"Empty\"}]]}"
+  )
+
+@test("maps decode and encode through a tree, keyed by strings or integers; a key written twice keeps its last")
+treeMaps()
+  sameTree(
+    TrMaps(HashMap(("one", 1)), TreeMap((2, "two"), (-1, "minus")), TreeMap((long(9223372036854775807), true))),
+    "{\"byName\":{\"one\":1},\"byId\":{\"-1\":\"minus\",\"2\":\"two\"},\"big\":{\"9223372036854775807\":true}}"
+  )
+  sameTree(
+    TrMaps(HashMap.empty[string, int](), TreeMap.empty[int, string](), TreeMap.empty[long, bool]()),
+    "{\"byName\":{},\"byId\":{},\"big\":{}}"
+  )
+  val twice = Json.obj(("a", Json.num(1)), ("b", Json.num(2)), ("c", Json.num(3)), ("a", Json.num(4)))
+  val many = json.decode[HashMap[string, int]](twice).ok.get
+  assertEq(many.size, 3)
+  assertEq(many.get("a"), Some(4))
+  assertEq(
+    json.decode[TreeMap[string, Vector[int]]](tree("{\"z\":[],\"y\":[1]}")).map(t -> t.keys.toVector),
+    Ok(["y", "z"])
+  )
+
+@test("a Json field holds any value, taken whole from the tree and written whole to it")
+treeRaw()
+  sameTree(TrRaw(1, Json.obj(("a", Json.arr(Json.Null, Json.num(2.5))))), "{\"id\":1,\"payload\":{\"a\":[null,2.5]}}")
+  sameTree(TrRaw(2, Json.Null), "{\"id\":2,\"payload\":null}")
+  sameTree(TrRaw(3, Json.obj()), "{\"id\":3,\"payload\":{}}")
+  sameTree(TrRaw(4, Json.obj(("k", Json.num(1)), ("k", Json.num(2)))), "{\"id\":4,\"payload\":{\"k\":1,\"k\":2}}")
+
+@test("a field absent from the tree takes its default, which sees the fields before it")
+treeDefaults()
+  assertEq(json.decode[TrDefaults](tree("{\"a\":1}")), Ok(TrDefaults(1, 2, "c", [])))
+  assertEq(json.decode[TrDefaults](tree("{\"b\":5,\"a\":1}")), Ok(TrDefaults(1, 5, "c", [])))
+  sameTree(TrDefaults(3, 0, "", [4]), "{\"a\":3,\"b\":0,\"c\":\"\",\"d\":[4]}")
+
+@test("a renamed field is read only by its JSON key, and an omitted field is skipped and never written")
+renamedAndOmitted()
+  sameTree(TrHidden(1, "fresh", 2), "{\"shown\":1,\"x\":2}")
+  assertEq(json.decode[TrHidden](tree("{\"shown\":1,\"x\":2,\"cache\":\"stale\"}")), Ok(TrHidden(1, "fresh", 2)))
+  assertEq(json.decode[TrHidden](tree("{\"shown\":1,\"renamed\":7,\"x\":2}")), Ok(TrHidden(1, "fresh", 2)))
+  assertEq(failsAs[TrHidden]("{\"shown\":1,\"renamed\":7}"), "missing field \"x\"")
+
+@test("keys no field has are skipped from a tree whatever their values, and fields come in any order")
+unknownFields()
+  assertEq(json.decode[TrAddress](tree("{\"city\":\"c\",\"street\":\"s\"}")), Ok(TrAddress("s", "c")))
+  val noisy = "{\"x\":{\"street\":1,\"y\":[[],[{}]]},\"city\":\"c\",\"n\":null,\"street\":\"s\",\"t\":true,\"z\":-1.5e3}"
+  assertEq(json.decode[TrAddress](tree(noisy)), Ok(TrAddress("s", "c")))
+  assertEq(json.decode[TrAddress](tree(noisy)), json.decode[TrAddress](noisy))
+  assertEq(json.decode[TrAddress](tree("{\"a\":[],\"b\":{},\"street\":\"s\",\"c\":[[[]]],\"city\":\"c\",\"d\":{\"e\":{}}}")), Ok(TrAddress("s", "c")))
+
+@test("a class decodes through its constructor from a tree and encodes its parameters to one")
+treeClasses()
+  val a = TrAccount(7, "ada", 1.5)
+  assertEq(json.toTree(a), tree("{\"id\":7,\"owner\":\"ada\",\"balance\":1.5}"))
+  val back = json.decode[TrAccount](tree("{\"balance\":1.5,\"owner\":\"ada\",\"id\":7}")).ok.get
+  assertEq((back.id, back.ownerName(), back.balance), (long(7), "ada", 1.5))
+
+@test("a field whose value is None is left out of a tree as it is of text, per field and for every field")
+omitNone()
+  val sparse = TrSparse("n", None, None)
+  assertEq(json.toTree(sparse), tree("{\"name\":\"n\",\"phone\":null}"))
+  assertEq(json.toTree(sparse, true), tree("{\"name\":\"n\"}"))
+  assertEq(s"${json.toTree(sparse, true)}", json.encode(sparse, true))
+  assertEq(json.decode[TrSparse](json.toTree(sparse, true)), Ok(sparse))
+  assertEq(json.toTree([Some(1), None], true), tree("[1,null]"))
+  assertEq(json.toTree(TrBox[Option[int]](None), true), tree("{}"))
+
+@test("a number in a tree reads as the text of it would: a whole real is an int, a fraction is an error")
+numbers()
+  assertEq(json.decode[int](Json.num(3.0)), json.decode[int]("3.0"))
+  assertEq(json.decode[int](Json.num(3.0)), Ok(3))
+  assertEq(json.decode[long](Json.num(3.0)), Ok(long(3)))
+  assertEq(json.decode[real](Json.num(3)), Ok(3.0))
+  assertEq(failsAs[int]("3.5"), "the number 3.5 is not a whole number within an int's range")
+  assertEq(failsAs[int]("3000000000"), "the number 3000000000 is not a whole number within an int's range")
+  assertEq(failsAs[long]("1.5"), "the number 1.5 is not a whole number within a long's range")
+  assertEq(failsAs[int]("\"3\""), "expected a number, found a string")
+
+@test("a NaN or an infinity, which text writes as null, is Null in a tree")
+treeNonFinite()
+  val nan = real(0.0) / real(0.0)
+  val inf = real(1.0) / real(0.0)
+  assertEq(json.toTree(nan), Json.Null)
+  assertEq(json.toTree(inf), Json.Null)
+  assertEq(json.toTree(-inf), Json.Null)
+  assertEq(json.toTree([nan, 1.0]), tree("[null,1.0]"))
+  assertEq(json.toTree(TrPoint(inf, 2.0)), tree("{\"x\":null,\"y\":2.0}"))
+  assertEq(s"${json.toTree(TrPoint(nan, 2.0))}", json.encode(TrPoint(nan, 2.0)))
+
+@test("an error from a subtree has the path from the subtree, and a message that reads without a line")
+subtreeErrors()
+  val message = tree("{\"method\":\"open\",\"id\":1,\"params\":{\"textDocument\":{\"uri\":5}}}")
+  val params = message.get("params").get
+  assertEq(failsAs[TrDocument]("{\"textDocument\":{\"uri\":5}}"), "textDocument.uri: expected a string, found a number")
+  assertEq(json.decode[TrDocument](params).err.map(e -> s"$e"), Some("textDocument.uri: expected a string, found a number"))
+  assertEq(
+    json.decode[TrMessage](message).err.map(e -> s"$e"),
+    Some("params.textDocument.uri: expected a string, found a number")
+  )
+  assertEq(json.decode[TrMessage](message).err.map(e -> e.pathText()), Some("params.textDocument.uri"))
+  assertEq(json.decode[TrUri](params.get("textDocument").get).err.map(e -> e.pathText()), Some("uri"))
+
+@test("the error of a decoder reading a tree names what is missing, what was expected and where, with no line")
+errors()
+  assertEq(failsAs[TrAddress]("{\"street\":\"s\"}"), "missing field \"city\"")
+  assertEq(failsAs[TrAddress]("{}"), "missing field \"street\"")
+  assertEq(failsAs[TrPerson]("{\"full_name\":\"A\",\"age\":1,\"home\":{\"city\":\"c\"}}"), "home: missing field \"street\"")
+  assertEq(failsAs[TrAddress]("{\"street\":null,\"city\":\"c\"}"), "street: expected a string, found null")
+  assertEq(failsAs[TrAddress]("[]"), "expected an object, found an array")
+  assertEq(failsAs[TrAddress]("\"x\""), "expected an object, found a string")
+  assertEq(failsAs[TrAddress]("null"), "expected an object, found null")
+  assertEq(failsAs[Vector[int]]("{}"), "expected an array, found an object")
+  assertEq(failsAs[Vector[int]]("[1,\"a\"]"), "[1]: expected a number, found a string")
+  assertEq(failsAs[TrLists]("{\"v\":[],\"l\":[],\"nested\":[[{\"kind\":\"circle\",\"radius\":\"r\"}]]}"), "nested[0][0].radius: expected a number, found a string")
+  assertEq(failsAs[TrAddress]("{\"street\":\"a\",\"street\":\"b\",\"city\":\"c\"}"), "duplicate field \"street\"")
+  assertEq(failsAs[TrShape]("{\"kind\":\"blob\"}"), "kind: unknown variant \"blob\"")
+  assertEq(failsAs[TrShape]("{\"radius\":1.0,\"kind\":\"circle\"}"), "expected \"kind\" first, naming the variant")
+  assertEq(failsAs[TrShape]("{}"), "expected \"kind\" first, naming the variant")
+  assertEq(failsAs[TrMaps]("{\"byName\":{},\"byId\":{\"x\":\"v\"},\"big\":{}}"), "byId.x: the key \"x\" is not a key of this map's type")
+  assertEq(failsAs[TrColor]("{\"type\":1}"), "type: expected a string, found a number")
+
+@test("an error in the element of a list names its index, from a tree and from text alike")
+indexes()
+  assertEq(failsAs[List[TrAddress]]("[{\"street\":\"s\",\"city\":\"c\"},{\"street\":1,\"city\":\"c\"}]"), "[1].street: expected a string, found a number")
+  assertEq(failsAs[Vector[Vector[int]]]("[[1],[2,\"x\"]]"), "[1][1]: expected a number, found a string")
+  assertEq(failsAs[HashMap[string, Vector[int]]]("{\"k\":[0,{}]}"), "k[1]: expected a number, found an object")
+
+@test("a tree built by hand decodes, whatever order and shape its members come in")
+byHand()
+  val built = Json.obj(
+    ("full_name", Json.str("Ada")),
+    ("age", Json.num(36)),
+    ("home", Json.obj(("city", Json.str("Springfield")), ("street", Json.str("1 Main"))))
+  )
+  assertEq(json.decode[TrPerson](built), Ok(TrPerson("Ada", 36, Some(TrAddress("1 Main", "Springfield")))))
+  assertEq(json.decode[TrPerson](built), json.decode[TrPerson](s"$built"))
+  assertEq(json.decode[Vector[int]](Json.arr(Json.num(1), Json.num(2))), Ok([1, 2]))
+  assertEq(json.decode[Vector[int]](Json.arr()), Ok(Vector.empty[int]()))
+  assertEq(json.decode[string](Json.str("")), Ok(""))
+  val dup = Json.obj(("street", Json.str("a")), ("city", Json.str("c")), ("street", Json.str("b")))
+  assertEq(json.decode[TrAddress](dup).err.map(e -> e.message), Some("duplicate field \"street\""))
+  assertEq(json.decode[TrAddress](Json.Null).err.map(e -> e.message), Some("expected an object, found null"))
+
+@test("a tree a program builds and a tree the package parses are the same value to a decoder")
+parsedEqualsBuilt()
+  val parsed = tree("{\"street\":\"s\",\"city\":\"c\"}")
+  val built = Json.obj(("street", Json.str("s")), ("city", Json.str("c")))
+  assertEq(parsed, built)
+  assertEq(json.decode[TrAddress](parsed), json.decode[TrAddress](built))
+
+@test("a reader of a tree gives the events a reader of its text gives, to the end and after it")
+readerEvents()
+  for text in [
+    "null",
+    "true",
+    "-0",
+    "1.5",
+    "\"s\"",
+    "[]",
+    "{}",
+    "[[],{},[[]]]",
+    "{\"a\":{\"b\":[1,{\"c\":null}]},\"d\":[],\"e\":\"x\",\"a\":2}"
+  ]
+    assertEq(treeEvents(JsonReader.fromTree(tree(text))), treeEvents(JsonReader.fromString(text)))
+  val r = JsonReader.fromTree(tree("[1]"))
+  assertEq(treeEvents(r), treeEvents(JsonReader.fromString("[1]")))
+  assertEq(r.next(), Ok(JsonEvent.EndOfText))
+  assertEq(r.finish(), Ok(()))
+
+@test("a reader of a tree peeks, skips values, and reports its depth as a reader of text does")
+readerCalls()
+  val r = JsonReader.fromTree(tree("{\"a\":[1,{\"b\":2}],\"c\":3}"))
+  assertEq(r.depth(), 0)
+  assertEq(r.peek(), Ok(JsonEvent.StartObject))
+  assertEq(r.peek(), Ok(JsonEvent.StartObject))
+  r.beginObject().ok.get
+  assertEq(r.depth(), 1)
+  assertEq(r.nextKey(), Ok(Some("a")))
+  r.skipValue().ok.get
+  assertEq(r.nextKey(), Ok(Some("c")))
+  assertEq(r.readInt(), Ok(3))
+  assertEq(r.nextKey(), Ok(None))
+  assertEq(r.depth(), 0)
+  assertEq(r.finish(), Ok(()))
+  val whole = JsonReader.fromTree(tree("{\"a\":[1,2]}"))
+  assertEq(whole.readDocument(), Ok(tree("{\"a\":[1,2]}")))
+  val n = JsonReader.fromTree(tree("[null,1]"))
+  n.beginArray().ok.get
+  assert(n.takeNull())
+  assert(!n.takeNull())
+  assertEq(n.readLong(), Ok(long(1)))
+
+@test("arrays and objects of a tree may nest maxDepth deep, as in text, and no deeper")
+treeDepth()
+  val three = Json.arr(Json.arr(Json.arr()))
+  assertEq(json.decode[Json](three, 3), Ok(three))
+  assertEq(json.decode[Json](tree("[[[]]]"), 3), json.decode[Json]("[[[]]]", 3))
+  val deep = json.decode[Json](three, 2)
+  assertEq(deep.err.map(e -> e.message), Some("arrays and objects nested more than 2 deep"))
+  assertEq(json.decode[Json]("[[[]]]", 2).err.map(e -> e.message), deep.err.map(e -> e.message))
+  assertEq(json.decode[Json](Json.obj(("a", Json.obj(("b", Json.arr())))), 2).isErr, true)
+  assertEq(json.decode[Json](Json.num(1), 0), Ok(Json.num(1)))
+  assertEq(json.decode[Json](Json.arr(), 0).isErr, true)
+
+@test("a tree that is a fragment's remainder is refused: a decoder reads the one value the tree is")
+oneValue()
+  assertEq(json.decode[int](Json.arr(Json.num(1))).isErr, true)
+  assertEq(failsAs[int]("[1]"), "expected a number, found an array")
+  assertEq(failsAs[Vector[int]]("[1,[2]]"), "[1]: expected a number, found an array")
+
+@test("a large tree decodes and encodes through a tree as through text, and the two agree")
+large()
+  val items = Vector.tabulate(5000, i -> TrItem(i, s"item$i", Vector.tabulate(i % 4, k -> s"t$k"), TrPoint(real(i) / 4.0, real(-i))))
+  val text = json.encode(items)
+  val built = json.toTree(items)
+  assertEq(built, tree(text))
+  assertEq(s"$built", text)
+  assertEq(json.decode[Vector[TrItem]](built), Ok(items))
+  assertEq(json.decode[Vector[TrItem]](built), json.decode[Vector[TrItem]](text))
+  val wide = Json.Arr(Vector.tabulate(100000, i -> Json.num(i)))
+  val ints = json.decode[Vector[int]](wide).ok.get
+  assertEq(ints.length, 100000)
+  assertEq(ints(99999), 99999)
+  assertEq(json.toTree(ints), wide)
+  val keyed = Json.Obj(Vector.tabulate(20000, i -> (s"k$i", Json.num(i))))
+  val map = json.decode[HashMap[string, int]](keyed).ok.get
+  assertEq(map.size, 20000)
+  assertEq(map.get("k19999"), Some(19999))
+
+@test("a deeply nested tree within the depth limit decodes through the recursive type")
+deepRecursive()
+  var node = TrNode("leaf", [])
+  for i in 0 .. 200
+    node = TrNode(s"n$i", [node])
+  sameTree(node, json.encode(node))
+
+@test("round trips: a value through a tree and back, a tree through a type and back, a tree through text and back")
+treeRoundTrips()
+  val person = TrPerson("Ada", 36, Some(TrAddress("1 Main", "Springfield")))
+  assertEq(json.decode[TrPerson](json.toTree(person)), Ok(person))
+  val shapes: Vector[TrShape] = [TrCircle(1.0), TrRect(2.0, 3.0), TrEmpty]
+  assertEq(json.decode[Vector[TrShape]](json.toTree(shapes)), Ok(shapes))
+  val doc = tree("{\"full_name\":\"Ada\",\"age\":36,\"home\":null}")
+  assertEq(json.toTree(json.decode[TrPerson](doc).ok.get), doc)
+  assertEq(json.parse(s"${json.toTree(person)}"), Ok(json.toTree(person)))
+  assertEq(json.toTree(json.toTree(person)), json.toTree(person))
+  assertEq(json.decode[Json](json.toTree(person)), Ok(json.toTree(person)))
+  val strings = ["", "a\u0000b", "é", "😀", "line\nbreak", "\"quoted\""]
+  assertEq(json.decode[Vector[string]](json.toTree(strings)), Ok(strings))

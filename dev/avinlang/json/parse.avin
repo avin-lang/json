@@ -37,14 +37,15 @@ impl JsonError
 
 // An error displays as its path, where it has one, its message and its place: `expected ':' after an
 // object's key at line 3, column 9`; `home.street: expected a string, found a number at line 1,
-// column 51`.
+// column 51`. An error from a `Json` tree has no place in text, its line is 0, and it displays as its
+// path and message alone: `params.uri: expected a string, found a number`.
 // A JSON error is an `Error` whose message is its field of the name, and which shows with its place.
 impl Error for JsonError
 
 impl Display for JsonError
   display(out: Writer, spec: FormatSpec)
     val place = if path.isEmpty then "" else s"${pathText()}: "
-    out.writeField(s"$place$message at line $line, column $column", spec)
+    out.writeField(if line == 0 then s"$place$message" else s"$place$message at line $line, column $column", spec)
 
 // How deeply arrays and objects may nest in the text `parse` reads unless it is told otherwise.
 val defaultMaxDepth: int = 512

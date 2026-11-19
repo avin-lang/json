@@ -59,6 +59,20 @@ decode[A: JsonDecoder](source: Reader, maxDepth: int = defaultMaxDepth) -> Resul
 decode[A: JsonDecoder](bytes: Array[byte], maxDepth: int = defaultMaxDepth) -> Result[A, JsonError] =
   decodeAll[A](JsonReader.fromBytes(bytes, maxDepth))
 
+// The value of type `A` that the `Json` value `tree` holds, which may be a part of a larger one, such as
+// a message's `params`: decoded by the decoders that read text, so every type that decodes from text
+// decodes from a tree, and an error's path begins at `tree`. An error has no line or column.
+decode[A: JsonDecoder](tree: Json, maxDepth: int = defaultMaxDepth) -> Result[A, JsonError] =
+  decodeAll[A](JsonReader.fromTree(tree, maxDepth))
+
+// The `Json` value that `encode` writes `value` as: the same members in the same order, each number
+// a `Long` or a `Real` as its text would read, and a NaN or an infinity `Null`. `omitNone` is as in
+// `encode`.
+toTree[A: JsonEncoder](value: A, omitNone: bool = false) -> Json
+  val out = JsonWriter.toTree(omitNone)
+  value.encode(out)
+  out.tree()
+
 private decodeAll[A: JsonDecoder](r: JsonReader) -> Result[A, JsonError]
   val value = A.decode(r)?
   r.finish()?

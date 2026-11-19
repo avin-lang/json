@@ -241,8 +241,9 @@ A type that says `derives JsonEncoder, JsonDecoder` is written and read as JSON 
 between: its encoder writes through a `JsonWriter` and its decoder reads an event at a time through
 the [streaming `JsonReader`](#reading-a-stream) above, each written for the type's own fields by the
 templates of `dev/avinlang/json/codec.avin`, written as the Avin specification's derivation chapter
-describes. There is one reader: a decoder reads text in hand and text arriving from a file or a
-connection the same way.
+describes. There is one reader: a decoder reads text in hand, text arriving from a file or a
+connection, and a `Json` value already in hand the same way (see [From and to a `Json`
+value](#from-and-to-a-json-value)).
 
 ```avin
 import dev.avinlang.json
@@ -307,6 +308,27 @@ main()
   and no decoder, since a value of its type could be of any subclass; a field typed as the `Map`
   trait has neither, its `HashMap` or `TreeMap` type both.
 
+## From and to a `Json` value
+
+```text
+decode[A: JsonDecoder](tree: Json, maxDepth: int = defaultMaxDepth) -> Result[A, JsonError]
+toTree[A: JsonEncoder](value: A, omitNone: bool = false) -> Json
+JsonReader.fromTree(tree: Json, maxDepth: int = defaultMaxDepth) -> JsonReader
+```
+
+A program that has parsed a message to look at its `method` decodes the part it wants from the tree,
+without reading the text again: `json.decode[Params](message("params"))`. The decoder is the one that
+reads text, so every shape that decodes from text decodes from a tree, to the same value or the same
+error. An error's path starts at the value given, so decoding a message's `params` names
+`textDocument.uri`, where decoding the whole message names `params.textDocument.uri`. A tree has no
+line or column: such an error's `line`, `column` and `offset` are 0, and it displays as its path and
+message, `textDocument.uri: expected a string, found a number`.
+
+`toTree(value)` is the `Json` that `encode(value)` writes, member for member in the same order, so
+`s"${json.toTree(v)}"` is `json.encode(v)` and `json.parse(json.encode(v))` is `Ok(json.toTree(v))`.
+A NaN or an infinity, which text writes as `null`, is `Null`. `omitNone` is as in `encode`.
+`JsonWriter.toTree()` is the writer behind it, whose `tree()` is the value written.
+
 ## Over HTTP
 
 The module **`dev.avinlang.json.http`** joins the derived codecs to the standard library's HTTP
@@ -352,4 +374,9 @@ A `BodyError`'s `status` and `response` give its status and that answer.
 ## Tests
 
 `avin test` in this directory runs the package's tests, in `tests/`; `tests/readme.avin` holds this
-page's examples.
+page's examples; `tests/tree.avin` holds decoding from and encoding to a `Json` value, each shape of
+type checked against its text.
+
+Decision: decoding from a tree is a `JsonReader` over the tree, not a second decoder, so a derived
+decoder has one path whatever the source; and the encoder to a tree is the one encoder writing to a
+`JsonWriter` that builds a value, named `toTree` because `encode` is already the text.

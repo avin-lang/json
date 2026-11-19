@@ -1,15 +1,33 @@
 module dev.avinlang.json
 
+// An array or object a tree-building writer has begun and not yet ended: its elements, or its keys
+// and values side by side, and for an object the key written and not yet given its value.
+private class TreeBuild(val isObject: bool)
+  val items = Buffer[Json]()
+  val keys = Buffer[string]()
+  var pending = ""
+
 // Writes JSON text to `out` a token at a time, placing the commas and colons itself: a value written
 // after another in the same array, or a key after a member, is preceded by a comma, and a key is
 // followed by its colon. The text is compact, with no white space. Nothing checks that the calls make
 // a document: an object's keys and values alternate, and every array and object is ended, because
 // the code calling it says so. With `omitNone`, a derived encoder leaves out every field whose value
 // is `None`.
-class JsonWriter(out: Writer, val omitNone: bool = false)
+//
+// A writer made by `JsonWriter.toTree` takes the same calls and builds the `Json` value the text
+// would read as, which `tree` gives once the one value has been written; a NaN or an infinity, which
+// text writes as `null`, is `Null` in it.
+class JsonWriter(out: Writer, val omitNone: bool = false, private val building: bool = false)
   // Whether the next key or value is preceded by a comma: true after a value, false right after an
   // opening bracket or a key.
   private var separate = false
+
+  // For a writer of a tree: the arrays and objects begun and not ended, and the value written.
+  private val open = Buffer[TreeBuild]()
+  private var built: Json = Null
+
+  // The value a writer of a tree has written.
+  tree() -> Json = built
 
   private before()
     if separate then out.writeChar(',')
@@ -17,37 +35,71 @@ class JsonWriter(out: Writer, val omitNone: bool = false)
   private after()
     separate = true
 
+  // A finished value of a tree: the root, an array's element, or the value of an object's key.
+  private put(value: Json)
+    if open.isEmpty
+      built = value
+    else
+      val top = open(open.length - 1)
+      if top.isObject then top.keys.addOne(top.pending)
+      top.items.addOne(value)
+
+  private end()
+    val top = open.remove(open.length - 1)
+    put(if top.isObject then Obj(Vector.tabulate(top.items.length, i -> (top.keys(i), top.items(i)))) else Arr(top.items.toVector))
+
   beginObject()
+    if building
+      open.addOne(TreeBuild(true))
+      return
     before()
     out.writeChar('{')
     separate = false
 
   endObject()
+    if building
+      end()
+      return
     out.writeChar('}')
     after()
 
   beginArray()
+    if building
+      open.addOne(TreeBuild(false))
+      return
     before()
     out.writeChar('[')
     separate = false
 
   endArray()
+    if building
+      end()
+      return
     out.writeChar(']')
     after()
 
   // An object's key and its colon; the member's value is written next.
   key(name: string)
+    if building
+      open(open.length - 1).pending = name
+      return
     before()
     writeQuoted(out, name, false)
     out.writeChar(':')
     separate = false
 
   string(s: string)
+    if building
+      put(Str(s))
+      return
     before()
     writeQuoted(out, s, false)
     after()
 
   long(n: long)
+    if building
+      put(Long(n))
+      return
     before()
     out.writeInt(n)
     after()
@@ -55,22 +107,38 @@ class JsonWriter(out: Writer, val omitNone: bool = false)
   // A `real` as `render` writes one: the fewest digits that read back as the same value, always
   // with a fraction or an exponent, and a NaN or an infinity as `null`.
   real(x: real)
+    if building
+      put(if x != x || x - x != x - x then Null else Real(x))
+      return
     before()
     writeReal(out, x)
     after()
 
   bool(b: bool)
+    if building
+      put(Bool(b))
+      return
     before()
     out.write(if b then "true" else "false")
     after()
 
   writeNull()
+    if building
+      put(Null)
+      return
     before()
     out.write("null")
     after()
 
   // A whole `Json` value, compact.
   json(value: Json)
+    if building
+      put(value)
+      return
     before()
     writeJson(out, value, 0, 0, false)
     after()
+
+object JsonWriter
+  // A writer that builds a tree: the encoders write to it as to any writer, and `tree` is the value.
+  toTree(omitNone: bool = false) -> JsonWriter = JsonWriter(StringWriter(), omitNone, true)
