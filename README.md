@@ -9,7 +9,7 @@ depends on it in its `avin.hocon`:
 
 ```hocon
 dependencies {
-  json { git = "github.com/avin-lang/json", version = "0.0.2" }
+  json { git = "github.com/avin-lang/json", version = "0.0.3" }
 }
 ```
 
