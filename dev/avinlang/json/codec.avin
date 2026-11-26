@@ -13,11 +13,11 @@ trait JsonEncoder
   encode(out: JsonWriter)
   isJsonNone() -> bool = false
 
-// A value read from JSON. `whenMissing` is the value of a field absent from the input, where the type
-// has one: `None` for an `Option`, and nothing for any other type, whose absence is an error.
-trait JsonDecoder
+// A value read from JSON. The value of a field absent from the input is the core's `Missable` answer
+// for its type, the one every format's decoder shares: `Some(None)` for an `Option`, and otherwise
+// `None`, an absence that is an error.
+trait JsonDecoder: Missable
   static decode(r: JsonReader) -> Result[Self, JsonError]
-  static whenMissing() -> Option[Self]
 
 // A field's or a variant's name in JSON, in place of its name in the program.
 data JsonKey(name: string)
@@ -93,7 +93,6 @@ impl JsonEncoder for bool
 
 impl JsonDecoder for bool
   static decode(r: JsonReader) -> Result[bool, JsonError] = r.readBool()
-  static whenMissing() -> Option[bool] = None
 
 impl JsonEncoder for int
   encode(out: JsonWriter) = out.long(long(self))
@@ -101,7 +100,6 @@ impl JsonEncoder for int
 
 impl JsonDecoder for int
   static decode(r: JsonReader) -> Result[int, JsonError] = r.readInt()
-  static whenMissing() -> Option[int] = None
 
 impl JsonEncoder for long
   encode(out: JsonWriter) = out.long(self)
@@ -109,7 +107,6 @@ impl JsonEncoder for long
 
 impl JsonDecoder for long
   static decode(r: JsonReader) -> Result[long, JsonError] = r.readLong()
-  static whenMissing() -> Option[long] = None
 
 // A NaN or an infinity, which JSON cannot write, is written `null`, and does not read back as a `real`.
 impl JsonEncoder for real
@@ -118,7 +115,6 @@ impl JsonEncoder for real
 
 impl JsonDecoder for real
   static decode(r: JsonReader) -> Result[real, JsonError] = r.readReal()
-  static whenMissing() -> Option[real] = None
 
 impl JsonEncoder for string
   encode(out: JsonWriter) = out.string(self)
@@ -126,14 +122,14 @@ impl JsonEncoder for string
 
 impl JsonDecoder for string
   static decode(r: JsonReader) -> Result[string, JsonError] = r.readString()
-  static whenMissing() -> Option[string] = None
 
 impl JsonEncoder for Json
   encode(out: JsonWriter) = out.json(self)
 
 impl JsonDecoder for Json
   static decode(r: JsonReader) -> Result[Json, JsonError] = r.readValue()
-  static whenMissing() -> Option[Json] = None
+
+impl Missable for Json
 
 // An `Option` is `null` when it is `None`, and its value otherwise; a field of an `Option` type absent
 // from the input is `None`.
@@ -146,7 +142,6 @@ impl[A: JsonEncoder] JsonEncoder for Option[A]
 impl[A: JsonDecoder] JsonDecoder for Option[A]
   static decode(r: JsonReader) -> Result[Option[A], JsonError] =
     if r.takeNull() then Ok(None) else A.decode(r).map(a -> Some(a))
-  static whenMissing() -> Option[Option[A]] = Some(None)
 
 // A vector and a list are arrays, the path of an error in an element naming its index.
 impl[A: JsonEncoder] JsonEncoder for Vector[A]
@@ -158,7 +153,6 @@ impl[A: JsonEncoder] JsonEncoder for Vector[A]
 
 impl[A: JsonDecoder] JsonDecoder for Vector[A]
   static decode(r: JsonReader) -> Result[Vector[A], JsonError] = decodeElements[A](r)
-  static whenMissing() -> Option[Vector[A]] = None
 
 private decodeElements[A: JsonDecoder](r: JsonReader) -> Result[Vector[A], JsonError]
   r.beginArray()?
@@ -176,7 +170,6 @@ impl[A: JsonEncoder] JsonEncoder for List[A]
 
 impl[A: JsonDecoder] JsonDecoder for List[A]
   static decode(r: JsonReader) -> Result[List[A], JsonError] = decodeElements[A](r).map(items -> items.toList)
-  static whenMissing() -> Option[List[A]] = None
 
 // A type whose values are an object's keys: a string as itself, and an `int` or a `long` as its
 // decimal digits, read back only from exactly what `toLongOption` reads.
@@ -203,14 +196,12 @@ impl[K: JsonMapKey, A: JsonEncoder] JsonEncoder for HashMap[K, A]
 
 impl[K: JsonMapKey, A: JsonDecoder] JsonDecoder for HashMap[K, A]
   static decode(r: JsonReader) -> Result[HashMap[K, A], JsonError] = decodeEntries(r, HashMap.newBuilder[K, A]())
-  static whenMissing() -> Option[HashMap[K, A]] = None
 
 impl[K: JsonMapKey, A: JsonEncoder] JsonEncoder for TreeMap[K, A]
   encode(out: JsonWriter) = encodeEntries(out, self.iterator())
 
 impl[K: JsonMapKey, A: JsonDecoder] JsonDecoder for TreeMap[K, A]
   static decode(r: JsonReader) -> Result[TreeMap[K, A], JsonError] = decodeEntries(r, TreeMap.newBuilder[K, A]())
-  static whenMissing() -> Option[TreeMap[K, A]] = None
 
 private encodeEntries[K: JsonMapKey, A: JsonEncoder](out: JsonWriter, entries: Iterator[(K, A)])
   out.beginObject()
@@ -258,10 +249,10 @@ impl FieldWriter
 // The derived decoder reads as the text comes: the discriminator first, where the type has several
 // variants, then each key, decoding its value at that field's type. A key no field has is skipped, a
 // key written twice is an error, and a field absent from the input takes its default, or its type's
-// `whenMissing`, or is an error naming it.
+// `whenMissing`, or is an error naming it. The deriving type keeps `Missable`'s default, `None`, unless
+// it implements `Missable` itself.
 derive JsonDecoder for T
   static decode(r: JsonReader) -> Result[T, JsonError] = T.build(FieldReader(r))
-  static whenMissing() -> Option[T] = None
 
 private data FieldReader(r: JsonReader)
 

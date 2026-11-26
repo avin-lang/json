@@ -1,0 +1,48 @@
+module tests
+
+// JSON's decoder requires the core's `Missable`: an absent `Option` field is `None`, any other absent
+// field is an error, and a type writing its own `Missable` answer has its absent field take it. JSON
+// is imported beside the standard library's CBOR and TOML, whose decoders share the same trait, and a
+// record decodes through all three.
+import avin.cbor
+import avin.cbor.{CborDecoder, CborEncoder}
+import avin.toml
+import avin.toml.{TomlDecoder, TomlEncoder}
+import dev.avinlang.json
+import dev.avinlang.json.{JsonDecoder, JsonEncoder}
+
+data MsPort(n: int) derives JsonEncoder, JsonDecoder, CborEncoder, CborDecoder, TomlEncoder, TomlDecoder
+
+impl Missable for MsPort
+  static whenMissing() -> Option[MsPort] = Some(MsPort(80))
+
+data MsServer(
+    name: string,
+    port: MsPort,
+    nick: Option[string]
+) derives JsonEncoder, JsonDecoder, CborEncoder, CborDecoder, TomlEncoder, TomlDecoder
+
+data MsName(name: string) derives JsonEncoder, CborEncoder, TomlEncoder
+
+viaJson[A: JsonDecoder]() -> Option[A] = A.whenMissing()
+
+@test("an absent field takes its type's Missable answer, the type's own where it writes one")
+absentFields()
+  val s = json.decode[MsServer]("{\"name\":\"web\"}").ok.get
+  assertEq(s.port.n, 80)
+  assertEq(s.nick, None)
+  assertEq(json.decode[MsServer]("{\"name\":\"web\",\"port\":{\"n\":443},\"nick\":\"w\"}").ok.get.port.n, 443)
+  assertEq(viaJson[Option[int]](), Some(None))
+  assertEq(viaJson[int](), None)
+  assertEq(viaJson[MsPort]().map(p -> p.n), Some(80))
+
+@test("JSON, CBOR and TOML imported together share one Missable answer")
+threeFormats()
+  val name = MsName("api")
+  assertEq(json.decode[MsServer](json.encode(name)).ok.get.port.n, 80)
+  assertEq(cbor.decode[MsServer](cbor.encode(name)).ok.get.port.n, 80)
+  assertEq(toml.decode[MsServer](toml.encode(name).ok.get).ok.get.port.n, 80)
+  val full = MsServer("x", MsPort(1), Some("y"))
+  assertEq(json.decode[MsServer](json.encode(full)).ok.get, full)
+  assertEq(cbor.decode[MsServer](cbor.encode(full)).ok.get, full)
+  assertEq(toml.decode[MsServer](toml.encode(full).ok.get).ok.get, full)
