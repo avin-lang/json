@@ -9,12 +9,12 @@ depends on it in its `avin.hocon`:
 
 ```hocon
 dependencies {
-  json { git = "github.com/avin-lang/json", version = "0.0.3" }
+  json { git = "github.com/avin-lang/json", version = "0.0.4" }
 }
 ```
 
 or with `avin add github.com/avin-lang/json@0.0.1`. The package needs nothing beyond the standard
-library.
+library. json 0.0.4 needs avin 0.0.41 or later.
 
 ```avin
 import dev.avinlang.json
