@@ -1,0 +1,88 @@
+module tests
+
+// A value typed as the `Map` trait, as a map literal is: a field, a type argument, nested and in an
+// `Option`. It is written whatever map it holds, in that map's order, and read as a hash map.
+import dev.avinlang.json
+import dev.avinlang.json.JsonEncoder
+import dev.avinlang.json.JsonDecoder
+import dev.avinlang.json.JsonError
+
+data Tally(counts: Map[string, int]) derives JsonEncoder, JsonDecoder
+
+data Index(
+    byId: Map[int, string],
+    big: Map[long, bool],
+    nested: Map[string, Map[int, Vector[int]]],
+    rows: Vector[Map[string, int]],
+    maybe: Option[Map[string, int]],
+    extra: Map[string, int] = {"d": 4}
+) derives JsonEncoder, JsonDecoder
+
+// The error decoding `text` as an `A`, or "decoded" where it reads.
+mapFailure[A: JsonDecoder](text: string) -> string = json.decode[A](text) match
+  Ok(_) -> "decoded"
+  Err(e) -> s"$e"
+
+@test("a field typed Map is an object of its entries")
+mapField()
+  assertEq(json.encode(Tally({"one": 1})), "{\"counts\":{\"one\":1}}")
+  assertEq(json.encode(Tally({})), "{\"counts\":{}}")
+  val back = json.decode[Tally]("{\"counts\":{\"a\":1,\"b\":2,\"é\":3}}").ok.get
+  assertEq(back.counts.size, 3)
+  assertEq(back.counts.get("a"), Some(1))
+  assertEq(back.counts.get("é"), Some(3))
+  assertEq(json.decode[Tally]("{\"counts\":{}}").ok.get.counts.size, 0)
+
+@test("a Map is written in the order of the map it holds, a tree map's sorted")
+mapOrder()
+  val sorted: Map[string, int] = TreeMap(("z", 1), ("a", 2), ("m", 3))
+  assertEq(json.encode(sorted), "{\"a\":2,\"m\":3,\"z\":1}")
+  assertEq(json.encode(Tally(sorted)), "{\"counts\":{\"a\":2,\"m\":3,\"z\":1}}")
+  val hashed: Map[string, int] = HashMap(("only", 1))
+  assertEq(json.encode(hashed), "{\"only\":1}")
+
+@test("a Map is read from JSON by its own decoder, a key written twice keeping its last value")
+mapDecoded()
+  val m = json.decode[Map[string, int]]("{\"a\":1,\"b\":2,\"a\":4}").ok.get
+  assertEq(m.size, 2)
+  assertEq(m.get("a"), Some(4))
+  val byInt = json.decode[Map[int, string]]("{\"-1\":\"minus\",\"2\":\"two\"}").ok.get
+  assertEq(byInt.get(-1), Some("minus"))
+  assertEq(byInt.get(2), Some("two"))
+
+@test("maps nest, sit in vectors and options, and take integer keys and a default")
+mapShapes()
+  val inner: Map[int, Vector[int]] = TreeMap((2, [1, 2]), (1, []))
+  val nested: Map[string, Map[int, Vector[int]]] = {"k": inner}
+  val big: Map[long, bool] = {long(9223372036854775807): true}
+  val value = Index({7: "seven"}, big, nested, [{"a": 1}, {}], Some({"s": 1}), {"x": 0})
+  val text =
+    "{\"byId\":{\"7\":\"seven\"},\"big\":{\"9223372036854775807\":true},\"nested\":{\"k\":{\"1\":[],\"2\":[1,2]}},\"rows\":[{\"a\":1},{}],\"maybe\":{\"s\":1},\"extra\":{\"x\":0}}"
+  assertEq(json.encode(value), text)
+  val back = json.decode[Index](text).ok.get
+  assertEq(json.encode(back), text)
+  assertEq(back.nested.get("k").flatMap(m -> m.get(2)), Some([1, 2]))
+  assertEq(back.rows.length, 2)
+  val bare = json.decode[Index]("{\"byId\":{},\"big\":{},\"nested\":{},\"rows\":[]}").ok.get
+  assertEq(bare.maybe is None, true)
+  assertEq(bare.extra.get("d"), Some(4))
+  assertEq(
+    json.encode(Index({}, {}, {}, [], None)),
+    "{\"byId\":{},\"big\":{},\"nested\":{},\"rows\":[],\"maybe\":null,\"extra\":{\"d\":4}}"
+  )
+  assertEq(json.decode[Option[Map[string, int]]]("null").ok.get is None, true)
+  assertEq(json.decode[Vector[Map[string, int]]]("[{\"a\":1}]").ok.get.length, 1)
+
+@test("a bad key, a bad value and a value that is no object are errors naming the path")
+mapErrors()
+  assertEq(
+    mapFailure[Index]("{\"byId\":{\"1\":\"a\",\"x\":\"b\"},\"big\":{},\"nested\":{},\"rows\":[]}"),
+    "byId.x: the key \"x\" is not a key of this map's type at line 1, column 18"
+  )
+  assertEq(
+    mapFailure[Tally]("{\"counts\":{\"a\":1,\"b\":\"x\"}}"),
+    "counts.b: expected a number, found a string at line 1, column 22"
+  )
+  assertEq(mapFailure[Tally]("{\"counts\":[1]}"), "counts: expected an object, found an array at line 1, column 11")
+  assertEq(mapFailure[Tally]("{}"), "missing field \"counts\" at line 1, column 2")
+  assertEq(mapFailure[Map[string, int]]("{\"a\":1} x"), mapFailure[HashMap[string, int]]("{\"a\":1} x"))

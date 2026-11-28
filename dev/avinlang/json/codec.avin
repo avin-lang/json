@@ -189,8 +189,17 @@ impl JsonMapKey for long
   jsonKey() -> string = s"$self"
   static fromJsonKey(key: string) -> Option[long] = key.toLongOption()
 
-// A map, a `HashMap` or a `TreeMap`, whose keys are a `JsonMapKey`, is an object of its entries in
-// the map's own order; a key written twice in the input keeps its last value.
+// A map, a `Map`, a `HashMap` or a `TreeMap`, whose keys are a `JsonMapKey`, is an object of its
+// entries in the map's own order; a key written twice in the input keeps its last value. A value
+// typed as the `Map` trait, as a map literal is, is written whatever map it is, and is read as the
+// map a literal of that type builds, a hash map.
+impl[K: JsonMapKey, A: JsonEncoder] JsonEncoder for Map[K, A]
+  encode(out: JsonWriter) = encodeEntries(out, self.iterator())
+  isJsonNone() -> bool = false
+
+impl[K: JsonMapKey, A: JsonDecoder] JsonDecoder for Map[K, A]
+  static decode(r: JsonReader) -> Result[Map[K, A], JsonError] = decodeEntries(r, Map.newBuilder[K, A]())
+
 impl[K: JsonMapKey, A: JsonEncoder] JsonEncoder for HashMap[K, A]
   encode(out: JsonWriter) = encodeEntries(out, self.iterator())
 

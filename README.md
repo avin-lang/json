@@ -271,7 +271,7 @@ main()
 | `bool`, `int`, `long`, `real`, `string` | `true`/`false`, a number, a string; a NaN or an infinity as `null` |
 | `Option[A]` | `null` for `None`, and the value otherwise |
 | `Vector[A]`, `List[A]` | An array |
-| `HashMap[K, A]`, `TreeMap[K, A]` | An object, in the map's order; `K` is a `JsonMapKey`: a `string`, or an `int` or a `long` written as its digits |
+| `Map[K, A]`, `HashMap[K, A]`, `TreeMap[K, A]` | An object, in the map's order; `K` is a `JsonMapKey`: a `string`, or an `int` or a `long` written as its digits |
 | `Json` | Itself |
 
 - **`json.encode(value)`** is the compact text; **`json.decode[A](text, maxDepth)`** the value, with
@@ -305,8 +305,9 @@ main()
   not UTF-8 an error at the first of them.
 - A type deriving them where a field's type lacks them is an error at the `derives` entry naming the
   field. A union has an encoder where its members do, and no decoder; an open class has an encoder
-  and no decoder, since a value of its type could be of any subclass; a field typed as the `Map`
-  trait has neither, its `HashMap` or `TreeMap` type both.
+  and no decoder, since a value of its type could be of any subclass. A field typed as the `Map`
+  trait, as a map literal is, has both: it is written whatever map it holds, and read as a hash
+  map, the map a literal builds.
 
 ## From and to a `Json` value
 
